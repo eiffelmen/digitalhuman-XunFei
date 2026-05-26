@@ -11,4 +11,6 @@ wheels/
 
 device.db
 
-resources/
+resources/*
+!resources/
+!resources/README.md
