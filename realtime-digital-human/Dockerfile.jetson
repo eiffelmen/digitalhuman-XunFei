@@ -1,0 +1,59 @@
+# Jetson Orin NX / JetPack 6.2 专用镜像
+FROM nvcr.io/nvidia/l4t-ml:r36.4.0-py3
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_PYTHON=python3.10
+
+# 基础依赖：编译工具、音视频库、WebRTC 依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    libgl1 \
+    libglib2.0-0 \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libopus-dev \
+    libvpx-dev \
+    pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+
+# 安装 uv（兼容 aarch64）
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    ln -s /root/.local/bin/uv /usr/local/bin/uv && \
+    ln -s /root/.local/bin/uvx /usr/local/bin/uvx
+
+WORKDIR /app
+
+COPY ./pyproject.toml .
+COPY ./.python-version .
+COPY ./uv.lock .
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
+
+# 修复 flask-sockets WebSocket 注册问题
+RUN sed -i "s/self.url_map.add(Rule(rule, endpoint=f))/self.url_map.add(Rule(rule, endpoint=f, websocket=True))/" \
+    .venv/lib/python3.10/site-packages/flask_sockets.py
+
+# 复制剩余代码
+COPY . .
+
+# Jetson 只有单 GPU，统一设定 0 号卡，可被 docker run -e 覆盖
+ENV CUDA_VISIBLE_DEVICES=0 \
+    TTS_SERVICE=http://sparktts-service:8778
+
+# 适配脚本（默认为 GPU0）并赋执行权限
+RUN sed -i 's/CUDA_VISIBLE_DEVICES=1/CUDA_VISIBLE_DEVICES=0/' docker_run_digitalman_server.sh && \
+    chmod +x docker_run_digitalman_server.sh
+
+EXPOSE 8010 8011
+
+# 启动后台服务
+CMD ["bash", "docker_run_digitalman_server.sh"]

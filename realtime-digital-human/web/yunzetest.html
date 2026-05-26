@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数字人会话管理 - Yunze Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .refresh-btn {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        .refresh-btn:hover {
+            background: #0056b3;
+        }
+        .session-list {
+            margin-top: 20px;
+        }
+        .session-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            margin-bottom: 10px;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+        }
+        .session-info {
+            flex: 1;
+        }
+        .session-id {
+            font-weight: bold;
+            color: #495057;
+            margin-bottom: 5px;
+        }
+        .session-status {
+            font-size: 12px;
+            color: #6c757d;
+        }
+        .test-btn {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        .test-btn:hover {
+            background: #218838;
+        }
+        .test-btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .wakeup-btn {
+            background: #ffc107;
+            color: #212529;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        .wakeup-btn:hover {
+            background: #e0a800;
+        }
+        .wakeup-btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .chat-input-container {
+            display: flex;
+            margin-top: 10px;
+            gap: 8px;
+        }
+        .chat-input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .chat-input:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+        }
+        .send-btn {
+            background: #17a2b8;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .send-btn:hover {
+            background: #138496;
+        }
+        .send-btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .status {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+        .status-active {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status-inactive {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .loading {
+            text-align: center;
+            color: #6c757d;
+            padding: 20px;
+        }
+        .error {
+            color: #dc3545;
+            background: #f8d7da;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success {
+            color: #155724;
+            background: #d4edda;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .connection-status {
+            font-size: 12px;
+            margin-top: 5px;
+        }
+        .ws-connected {
+            color: #28a745;
+        }
+        .ws-disconnected {
+            color: #dc3545;
+        }
+        .webrtc-connected {
+            color: #28a745;
+        }
+        .webrtc-disconnected {
+            color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>数字人会话管理</h1>
+
+        <button class="refresh-btn" onclick="loadSessions()">刷新会话列表</button>
+
+        <div id="status-message"></div>
+
+        <div class="session-list" id="session-list">
+            <div class="loading">正在加载会话列表...</div>
+        </div>
+    </div>
+
+    <script>
+        // 获取当前服务器地址（使用当前页面的端口）
+        const serverUrl = window.location.origin;
+
+        // 页面加载时自动获取会话列表
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSessions();
+        });
+
+        // 加载会话列表
+        async function loadSessions() {
+            const sessionList = document.getElementById('session-list');
+            const statusMessage = document.getElementById('status-message');
+
+            sessionList.innerHTML = '<div class="loading">正在加载会话列表...</div>';
+            statusMessage.innerHTML = '';
+
+            try {
+                const response = await fetch(`${serverUrl}/list_sessions`);
+                const data = await response.json();
+
+                if (data.code === 0) {
+                    displaySessions(data.sessions);
+                    statusMessage.innerHTML = `<div class="success">成功加载 ${data.total_sessions} 个会话</div>`;
+                } else {
+                    throw new Error(data.message);
+                }
+            } catch (error) {
+                sessionList.innerHTML = '';
+                statusMessage.innerHTML = `<div class="error">加载会话列表失败: ${error.message}</div>`;
+            }
+        }
+
+        // 显示会话列表
+        function displaySessions(sessions) {
+            const sessionList = document.getElementById('session-list');
+
+            if (sessions.length === 0) {
+                sessionList.innerHTML = '<div class="loading">没有正在运行的会话</div>';
+                return;
+            }
+
+            sessionList.innerHTML = '';
+
+            sessions.forEach(session => {
+                const sessionItem = document.createElement('div');
+                sessionItem.className = 'session-item';
+
+                const sessionInfo = document.createElement('div');
+                sessionInfo.className = 'session-info';
+
+                const sessionId = document.createElement('div');
+                sessionId.className = 'session-id';
+                sessionId.textContent = session.sessionid;
+
+                const sessionStatus = document.createElement('div');
+                sessionStatus.className = 'session-status';
+
+                const statusSpan = document.createElement('span');
+                statusSpan.className = `status status-${session.status}`;
+                statusSpan.textContent = session.status === 'active' ? '活跃' : '非活跃';
+
+                const connectionStatus = document.createElement('div');
+                connectionStatus.className = 'connection-status';
+
+                const wsStatus = document.createElement('span');
+                wsStatus.className = session.has_websocket ? 'ws-connected' : 'ws-disconnected';
+                wsStatus.textContent = `WebSocket: ${session.has_websocket ? '已连接' : '未连接'}`;
+
+                const webrtcStatus = document.createElement('span');
+                webrtcStatus.className = session.has_webrtc ? 'webrtc-connected' : 'webrtc-disconnected';
+                webrtcStatus.textContent = ` | WebRTC: ${session.has_webrtc ? '已连接' : '未连接'}`;
+
+                connectionStatus.appendChild(wsStatus);
+                connectionStatus.appendChild(webrtcStatus);
+
+                sessionStatus.appendChild(statusSpan);
+
+                sessionInfo.appendChild(sessionId);
+                sessionInfo.appendChild(sessionStatus);
+                sessionInfo.appendChild(connectionStatus);
+
+                // 添加聊天输入框和发送按钮
+                const chatContainer = document.createElement('div');
+                chatContainer.className = 'chat-input-container';
+
+                const chatInput = document.createElement('input');
+                chatInput.type = 'text';
+                chatInput.className = 'chat-input';
+                chatInput.placeholder = '输入要发送的文本...';
+
+                const sendButton = document.createElement('button');
+                sendButton.className = 'send-btn';
+                sendButton.textContent = '发送';
+                sendButton.onclick = () => sendCustomMessage(session.sessionid, chatInput.value);
+
+                // 支持回车键发送
+                chatInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        sendCustomMessage(session.sessionid, chatInput.value);
+                    }
+                });
+
+                chatContainer.appendChild(chatInput);
+                chatContainer.appendChild(sendButton);
+                sessionInfo.appendChild(chatContainer);
+
+                const testButton = document.createElement('button');
+                testButton.className = 'test-btn';
+                testButton.textContent = '测试对话';
+                testButton.onclick = () => testHumanInterface(session.sessionid);
+
+                const wakeupButton = document.createElement('button');
+                wakeupButton.className = 'wakeup-btn';
+                wakeupButton.textContent = '测试唤醒';
+                wakeupButton.onclick = () => testWakeupWebSocket(session.sessionid);
+
+                sessionItem.appendChild(sessionInfo);
+                sessionItem.appendChild(testButton);
+                sessionItem.appendChild(wakeupButton);
+
+                sessionList.appendChild(sessionItem);
+            });
+        }
+
+        // 测试human接口
+        async function testHumanInterface(sessionid) {
+            const statusMessage = document.getElementById('status-message');
+            const testMessage = "你好，这是一个测试消息，用于验证数字人对话功能是否正常工作。";
+
+            statusMessage.innerHTML = `<div class="loading">正在向会话 ${sessionid} 发送测试消息...</div>`;
+
+            try {
+                const response = await fetch(`${serverUrl}/human`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sessionid: sessionid,
+                        type: "chat",
+                        text: testMessage
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.code === 0) {
+                    statusMessage.innerHTML = `<div class="success">测试消息发送成功！会话ID: ${sessionid}</div>`;
+                } else {
+                    throw new Error(data.message || '未知错误');
+                }
+            } catch (error) {
+                statusMessage.innerHTML = `<div class="error">测试失败: ${error.message}</div>`;
+            }
+        }
+
+        // 发送自定义消息到对话接口
+        async function sendCustomMessage(sessionid, message) {
+            const statusMessage = document.getElementById('status-message');
+
+            if (!message || message.trim() === '') {
+                statusMessage.innerHTML = `<div class="error">请输入要发送的文本</div>`;
+                return;
+            }
+
+            statusMessage.innerHTML = `<div class="loading">正在向会话 ${sessionid} 发送消息: "${message}"...</div>`;
+
+            try {
+                const response = await fetch(`${serverUrl}/human`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sessionid: sessionid,
+                        type: "chat",
+                        text: message
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.code === 0) {
+                    statusMessage.innerHTML = `<div class="success">消息发送成功！会话ID: ${sessionid}, 消息: "${message}"</div>`;
+
+                    // 清空输入框
+                    const sessionItems = document.querySelectorAll('.session-item');
+                    sessionItems.forEach(item => {
+                        const sessionIdElement = item.querySelector('.session-id');
+                        if (sessionIdElement && sessionIdElement.textContent === sessionid) {
+                            const input = item.querySelector('.chat-input');
+                            if (input) {
+                                input.value = '';
+                            }
+                        }
+                    });
+                } else {
+                    throw new Error(data.message || '未知错误');
+                }
+            } catch (error) {
+                statusMessage.innerHTML = `<div class="error">发送失败: ${error.message}</div>`;
+            }
+        }
+
+        // 测试唤醒WebSocket接口
+        function testWakeupWebSocket(sessionid) {
+            const statusMessage = document.getElementById('status-message');
+            // const wsUrl = "ws://36.103.180.159:8000/ws?type=app&id=1";
+            const wsUrl = window.location.origin.replace(/^http/, 'ws').replace(/:[0-9]+$/, ':8000') + '/ws?type=app&id=1';
+            // const wsUrl = window.location.origin.replace(/:[0-9]+$/, ':8010');
+
+            statusMessage.innerHTML = `<div class="loading">正在连接WebSocket并发送唤醒消息...</div>`;
+
+            try {
+                // 创建WebSocket连接
+                const ws = new WebSocket(wsUrl);
+                console.log(ws);
+
+                ws.onopen = function(event) {
+                    // 连接成功后发送唤醒消息
+                    const wakeupMessage = {
+                        type: "msg2web",
+                        deviceid: sessionid,
+                        data: "work"
+                    };
+
+                    ws.send(JSON.stringify(wakeupMessage));
+                    statusMessage.innerHTML = `<div class="success">WebSocket连接成功！已发送唤醒消息，会话ID: ${sessionid}</div>`;
+
+                    // 发送消息后关闭连接
+                    setTimeout(() => {
+                        ws.close();
+                    }, 1000);
+                };
+
+                ws.onerror = function(error) {
+                    statusMessage.innerHTML = `<div class="error">WebSocket连接失败: ${error.message || '未知错误'}</div>`;
+                };
+
+                ws.onclose = function(event) {
+                    // 连接关闭时的处理
+                    if (event.code !== 1000) {
+                        statusMessage.innerHTML = `<div class="error">WebSocket连接异常关闭: ${event.reason || '未知原因'}</div>`;
+                    }
+                };
+
+                // 设置连接超时
+                setTimeout(() => {
+                    if (ws.readyState === WebSocket.CONNECTING) {
+                        ws.close();
+                        statusMessage.innerHTML = `<div class="error">WebSocket连接超时</div>`;
+                    }
+                }, 5000);
+
+            } catch (error) {
+                statusMessage.innerHTML = `<div class="error">WebSocket连接异常: ${error.message}</div>`;
+            }
+        }
+
+        // 自动刷新会话列表（每30秒）
+        setInterval(loadSessions, 30000);
+    </script>
+</body>
+</html>

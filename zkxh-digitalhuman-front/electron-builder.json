@@ -1,0 +1,64 @@
+{
+  "appId": "com.zkxh.digitalhuman",
+  "productName": "ZKXH-DigitalHuman",
+  "copyright": "Copyright © 2024",
+  "directories": {
+    "output": "dist-electron",
+    "buildResources": "build"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "public",
+      "to": "public",
+      "filter": ["**/*"]
+    }
+  ],
+  "linux": {
+    "target": [
+      {
+        "target": "AppImage",
+        "arch": ["x64"]
+      },
+      {
+        "target": "deb",
+        "arch": ["x64"]
+      },
+      {
+        "target": "tar.gz",
+        "arch": ["x64"]
+      }
+    ],
+    "category": "Utility",
+    "icon": "build/icon.png",
+    "executableName": "zkxh-digitalhuman",
+    "desktop": {
+      "Name": "ZKXH DigitalHuman",
+      "Comment": "数字人交互系统",
+      "Type": "Application",
+      "Categories": "Utility;Application;",
+      "StartupNotify": "true",
+      "Terminal": "false"
+    },
+    "maintainer": "ZKXH Team",
+    "vendor": "ZKXH",
+    "synopsis": "数字人交互系统",
+    "description": "基于Vue3和Electron的数字人交互前端系统，支持语音识别、大模型交互、文本转语音等功能"
+  },
+  "deb": {
+    "depends": [
+      "gconf2",
+      "gconf-service",
+      "libnotify4",
+      "libappindicator1",
+      "libxtst6",
+      "libnss3"
+    ],
+    "afterInstall": "build/after-install.sh"
+  },
+  "publish": null
+}

@@ -1,0 +1,1 @@
+fastapi run my_web_service.py --port 8000 --host 0.0.0.0

@@ -1,0 +1,106 @@
+{
+  "name": "zkxh-digitalhuman-electron",
+  "version": "3.0.2",
+  "description": "Ratutech Digital Human Interactive System",
+  "author": {
+    "name": "Ratutech Team",
+    "email": "support@ratutech.com"
+  },
+  "homepage": "https://github.com/zkxh/digitalhuman",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 3000",
+    "dev:electron": "NODE_ENV=development ELECTRON_ENABLE_LOGGING=1 LOG_LEVEL=3 electron .",
+    "build": "vite build",
+    "build:debug": "DEBUG=1 vite build",
+    "build:electron": "BUILD_ELECTRON=true vite build && electron-builder --linux",
+    "build:electron:dir": "BUILD_ELECTRON=true vite build && electron-builder --linux --dir",
+    "build:electron:dir:dev": "NODE_ENV=development BUILD_ELECTRON=true vite build && electron-builder --linux --dir",
+    "build:electron:dir:debug": "DEBUG=1 BUILD_ELECTRON=true vite build && electron-builder --linux --dir",
+    "build:electron:arm64": "DEBUG=1 BUILD_ELECTRON=true vite build && electron-builder --linux --arm64",
+    "build:electron:arm64:dir": "DEBUG=1 BUILD_ELECTRON=true vite build && electron-builder --linux --arm64 --dir",
+    "build:electron:arm64:dir:debug": "DEBUG=1 BUILD_ELECTRON=true vite build && electron-builder --linux --arm64 --dir",
+    "start:built": "NODE_ENV=development ELECTRON_ENABLE_LOGGING=1 LOG_LEVEL=3 ./dist-electron/linux-unpacked/zkxh-digitalhuman --no-sandbox",
+    "start:built:log": "NODE_ENV=development ELECTRON_ENABLE_LOGGING=1 LOG_LEVEL=3 ./dist-electron/linux-unpacked/zkxh-digitalhuman --no-sandbox 2>&1 | tee app.log",
+    "preview": "vite preview --host 0.0.0.0 --port 4174",
+    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore",
+    "format": "prettier --write src/"
+  },
+  "dependencies": {
+    "animate.css": "^4.1.1",
+    "node-machine-id": "^1.1.12",
+    "openai": "^4.68.2",
+    "pubsub-js": "^1.9.5",
+    "recorder-core": "^1.3.24040900",
+    "uuid": "^11.0.5",
+    "vue": "^3.4.29",
+    "vue-router": "^4.3.3",
+    "vuetify": "^3.7.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@mdi/font": "^7.4.47",
+    "@rushstack/eslint-patch": "^1.8.0",
+    "@vitejs/plugin-basic-ssl": "^1.2.0",
+    "@vitejs/plugin-vue": "^5.0.5",
+    "@vue/eslint-config-prettier": "^9.0.0",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "eslint": "^8.57.1",
+    "eslint-plugin-vue": "^9.23.0",
+    "postcss-pxtorem": "^6.1.0",
+    "prettier": "^3.2.5",
+    "vite": "^5.3.1",
+    "vite-plugin-electron": "^0.28.0",
+    "vite-plugin-vue-devtools": "^7.3.1"
+  },
+  "build": {
+    "appId": "com.zkxh.digitalhuman",
+    "productName": "ZKXH-DigitalHuman",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "Utility",
+      "icon": "build/icon.png",
+      "executableName": "zkxh-digitalhuman",
+      "maintainer": "Ratutech Team <support@ratutech.com>",
+      "desktop": {
+        "Name": "ZKXH DigitalHuman",
+        "Comment": "数字人交互系统",
+        "Type": "Application",
+        "Categories": "Utility;Application;"
+      }
+    }
+  }
+}

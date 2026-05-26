@@ -1,0 +1,13 @@
+FunASR
+Spark-TTS
+.venv
+.git
+*.tar
+*.tar.gz
+.venv/
+logs/
+archive/
+__pycache__/
+.pytest_cache/
+# 忽略数字人形象，做volume挂载
+data/avatars/

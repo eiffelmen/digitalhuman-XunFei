@@ -1,0 +1,29 @@
+[project]
+name = "realtime-digitalhuman"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "aiohttp-cors>=0.8.1",
+    "aiortc>=1.13.0",
+    "av>=14.4.0",
+    "dotenv>=0.9.9",
+    "edge-tts>=7.0.2",
+    "fastapi[standard]>=0.115.14",
+    "flask==3.1.0",
+    "flask-sockets==0.2.1",
+    "librosa>=0.11.0",
+    "loguru>=0.7.3",
+    "modelscope>=1.27.1",
+    "openai>=1.88.0",
+    "opencv-python-headless>=4.11.0.86",
+    "resampy>=0.4.3",
+    "tomli>=2.2.1",
+    "tomlkit>=0.13.3",
+    "torch==2.6.0",
+    "websockets==13.1",
+]
+[tool.uv]
+index-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+extra-index-url = ["https://download.pytorch.org/whl/cu124"]

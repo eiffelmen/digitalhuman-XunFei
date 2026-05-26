@@ -1,0 +1,47 @@
+@import './base.css';
+
+html,
+body,
+#app {
+	height: 100%;
+	font-weight: normal;
+	-moz-user-select: none;
+	/*火狐*/
+	-webkit-user-select: none;
+	/*webkit浏览器*/
+	-ms-user-select: none;
+	/*IE10*/
+	-khtml-user-select: none;
+	/*早期浏览器*/
+	user-select: none;
+}
+
+/* 隐藏滚动条 */
+#app::-webkit-scrollbar {
+	display: none;
+}
+#app {
+	-ms-overflow-style: none; /* IE and Edge */
+	scrollbar-width: none; /* Firefox */
+}
+
+a,
+.green {
+	text-decoration: none;
+	color: hsla(160, 100%, 37%, 1);
+	transition: 0.4s;
+	padding: 3px;
+}
+
+@media (hover: hover) {
+	a:hover {
+		background-color: hsla(160, 100%, 37%, 0.2);
+	}
+}
+.loading-tips {
+	color: #fff !important;
+}
+
+:root {
+	font-size: calc(100vw / 3840 * 10);
+}
