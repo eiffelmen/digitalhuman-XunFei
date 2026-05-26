@@ -491,7 +491,7 @@ onUnmounted(() => {
 					src="@/assets/imgs/demo.jpeg"
 					class="camera-image"
 				/> -->
-				<!-- todo: http://116.177.238.84:8000/static/反诈视频.mp4 -->
+				<!-- todo: http://your-server-host:8000/static/反诈视频.mp4 -->
 				<video id="ad-video" class="camera-image" :src="adVideoSrc" autoplay loop></video>
 			</div>
 		</div>

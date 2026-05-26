@@ -42,7 +42,7 @@ function SrsRtcPublisherAsync() {
     // or set the api server to myapi.domain.com:
     //      webrtc://myapi.domain.com/live/livestream
     // or set the candidate(eip) of answer:
-    //      webrtc://r.ossrs.net/live/livestream?candidate=39.107.238.185
+    //      webrtc://r.ossrs.net/live/livestream?candidate=your-srs-host
     // or force to access https API:
     //      webrtc://r.ossrs.net/live/livestream?schema=https
     // or use plaintext, without SRTP:
@@ -290,7 +290,7 @@ function SrsRtcPlayerAsync() {
     // or set the api server to myapi.domain.com:
     //      webrtc://myapi.domain.com/live/livestream
     // or set the candidate(eip) of answer:
-    //      webrtc://r.ossrs.net/live/livestream?candidate=39.107.238.185
+    //      webrtc://r.ossrs.net/live/livestream?candidate=your-srs-host
     // or force to access https API:
     //      webrtc://r.ossrs.net/live/livestream?schema=https
     // or use plaintext, without SRTP:

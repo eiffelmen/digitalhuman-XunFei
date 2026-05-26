@@ -7,7 +7,7 @@
 
 
 websocket唤醒前端
-ws://36.103.180.159:8000/ws?type=app&id=1
+ws://your-server-host:8000/ws?type=app&id=1
 
 {
   "type": "msg2web",

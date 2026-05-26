@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e  # 任何命令失败立即退出
 
-REGISTRY_HOST=36.103.180.159
-REGISTRY_PORT=8099
+REGISTRY_HOST=${REGISTRY_HOST:-registry.example.com}
+REGISTRY_PORT=${REGISTRY_PORT:-8099}
 IMAGE_NAME=digitalhuman/front
 VERSION=${1:-$(date +%Y%m%d%H%M%S)}  # 支持手动传入版本号，默认用时间戳
 FULL_IMAGE=$REGISTRY_HOST:$REGISTRY_PORT/$IMAGE_NAME

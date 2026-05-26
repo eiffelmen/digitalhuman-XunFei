@@ -1,11 +1,11 @@
 package com.example.myapplication;
 
 public class AppConstants {
-    public final static String SERVER_IP = "192.168.8.161";
+    public final static String SERVER_IP = BuildConfig.SERVER_IP;
 
     // 音频设备（RK3588多模态盒子）IP与端口（可根据串口查询IP后设置）
     // NOTE: 设备为动态 IP 时，建议通过串口指令获取后写入此处，或在运行时从配置中读取。
-    public final static String AUDIO_DEVICE_IP = "localhost"; // TODO: 替换为实际设备IP
+    public final static String AUDIO_DEVICE_IP = BuildConfig.AUDIO_DEVICE_IP;
     public final static int AUDIO_DEVICE_PORT = 9080;
 
     // ASR 服务地址（wss）。如为自签证书，请使用安全证书或在客户端侧明确信任策略。

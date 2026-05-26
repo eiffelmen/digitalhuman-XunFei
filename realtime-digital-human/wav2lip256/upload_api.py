@@ -1,20 +1,27 @@
 import uuid
+import os
 from io import BytesIO
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from minio import Minio  # pip install minio==7.1.0
 
-minio_server = '10.100.10.32:81'
-minio_access_key = 'IqQpHtTuacXruzdoXxca'
-minio_secret_key = '8uhNbnHRAinAe5pujWbYf6TkzwIWFIZYY56F3o9p'
 
-minio_client = Minio(
-    minio_server,
-    access_key=minio_access_key,
-    secret_key=minio_secret_key,
-    secure=False
-)
+def _get_required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"缺少环境变量: {name}")
+    return value
 
-bucket_name = 'laboratory'
+
+def _get_minio_client() -> Minio:
+    return Minio(
+        _get_required_env("MINIO_ENDPOINT"),
+        access_key=_get_required_env("MINIO_ACCESS_KEY"),
+        secret_key=_get_required_env("MINIO_SECRET_KEY"),
+        secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
+    )
+
+
+bucket_name = os.getenv("MINIO_BUCKET", "laboratory")
 
 app = FastAPI()
 
@@ -22,9 +29,13 @@ app = FastAPI()
 def upload_file_to_minio_sync(file_data: BytesIO, file_name: str, file_type: str, file_size: int):
     try:
         file_name = 'file/' + file_name
+        minio_client = _get_minio_client()
         minio_client.put_object(bucket_name, file_name,
                                 file_data, file_size, content_type=file_type)
-        return f"https://oss.minio.ratuads.com:8143/{bucket_name}/" + file_name
+        public_base_url = os.getenv("MINIO_PUBLIC_BASE_URL", "").rstrip("/")
+        if public_base_url:
+            return f"{public_base_url}/{bucket_name}/{file_name}"
+        return f"{bucket_name}/{file_name}"
     except Exception as err:
         print(f"上传文件失败: {err}")
         raise HTTPException(

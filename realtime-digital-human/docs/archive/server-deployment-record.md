@@ -32,7 +32,7 @@ rsync -avzP --exclude='.venv' \
   --exclude='digitalhuman-web-xinhe' \
   --no-specials --no-devices \
   /Data1/home/lishuang/realtime-digitalhuman/ \
-  root@116.177.238.84:/data/realtime-digitalhuman/
+  root@your-server-host:/data/realtime-digitalhuman/
 
 
 ```

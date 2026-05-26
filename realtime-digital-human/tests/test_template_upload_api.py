@@ -4,7 +4,7 @@ import argparse
 
 
 async def test_upload_audio(file_path: str):
-    url = "http://10.100.10.31:8088/v1/upload_audio"
+    url = "http://your-server-host:8088/v1/upload_audio"
 
     try:
         with open(file_path, "rb") as f:
@@ -17,7 +17,7 @@ async def test_upload_audio(file_path: str):
 
 
 async def test_upload_image(file_path: str):
-    url = "http://10.100.10.31:8088/v1/upload_image"
+    url = "http://your-server-host:8088/v1/upload_image"
 
     try:
         with open(file_path, "rb") as f:
@@ -30,7 +30,7 @@ async def test_upload_image(file_path: str):
 
 
 async def test_delete_audio(avatar_audio: int):
-    url = f"http://10.100.10.31:8088/v1/delete_audio/{avatar_audio}"
+    url = f"http://your-server-host:8088/v1/delete_audio/{avatar_audio}"
 
     async with httpx.AsyncClient() as client:
         response = await client.delete(url)
@@ -38,7 +38,7 @@ async def test_delete_audio(avatar_audio: int):
 
 
 async def test_delete_image(avatar_bg: int):
-    url = f"http://10.100.10.31:8088/v1/delete_image/{avatar_bg}"
+    url = f"http://your-server-host:8088/v1/delete_image/{avatar_bg}"
 
     async with httpx.AsyncClient() as client:
         response = await client.delete(url)
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 
-# curl -X POST http://10.100.10.31:8088/v1/upload_audio -F "file=@ref_audios/1.wav"
-# curl -X POST http://10.100.10.31:8088/v1/upload_image -F "file=@customimage/1.jpg;type=image/jpeg" \
-# curl -X DELETE http://10.100.10.31:8088/v1/delete_audio/{avatar_audio}
-# curl -X DELETE http://10.100.10.31:8088/v1/delete_image/{avatar_bg}
+# curl -X POST http://your-server-host:8088/v1/upload_audio -F "file=@ref_audios/1.wav"
+# curl -X POST http://your-server-host:8088/v1/upload_image -F "file=@customimage/1.jpg;type=image/jpeg" \
+# curl -X DELETE http://your-server-host:8088/v1/delete_audio/{avatar_audio}
+# curl -X DELETE http://your-server-host:8088/v1/delete_image/{avatar_bg}

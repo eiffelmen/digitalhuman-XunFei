@@ -47,10 +47,10 @@ src/
 
 | 路径 | 目标地址 | 用途 |
 |------|---------|------|
-| `/asr` | WebSocket ws://36.103.180.159:10099 | 语音识别 |
-| `/llm` | WebSocket ws://36.103.180.159:8011 | 大模型对话 |
-| `/api` | http://36.103.180.159:8000 | REST API |
-| `/backend` | http://36.103.180.159:8010 | 后端服务 |
+| `/asr` | WebSocket ws://your-server-host:10099 | 语音识别 |
+| `/llm` | WebSocket ws://your-server-host:8011 | 大模型对话 |
+| `/api` | http://your-server-host:8000 | REST API |
+| `/backend` | http://your-server-host:8010 | 后端服务 |
 | `/api_five/six/eight/eleven` | 8085/8086/8088/8011 | 其他 API |
 
 ## 部署说明

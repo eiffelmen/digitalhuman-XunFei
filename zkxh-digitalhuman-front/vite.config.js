@@ -14,9 +14,12 @@ const isBuildingElectron = process.env.npm_lifecycle_event?.includes('electron')
 // 加载环境变量
 const env = loadEnv('development', process.cwd(), '');
 
-// 后端服务地址配置（默认使用生产地址）
-const BACKEND_HOST = env.VITE_BACKEND_HOST || '192.168.8.161';
+// 后端服务地址配置
+const BACKEND_HOST = env.VITE_BACKEND_HOST || 'localhost';
 const BACKEND_PORT = env.VITE_BACKEND_PORT || '8010';
+const MAIN_API_PORT = env.VITE_MAIN_API_PORT || '8000';
+const ASR_WS_PORT = env.VITE_ASR_WS_PORT || '10099';
+const RAG_PORT = env.VITE_RAG_PORT || '8888';
 const LLM_WS_PORT = env.VITE_LLM_WS_PORT || '8011';
 
 console.log('[Vite Config] BACKEND_PORT:', BACKEND_PORT);
@@ -30,11 +33,10 @@ export default defineConfig({
 		// 开发环境使用 HTTP，不使用 HTTPS
 		https: false,
 		proxy: {
-			// '/v1/upload_file': 'http://36.103.180.159:8888',
-			'/v1/upload_file': `http://${BACKEND_HOST}:8888`,
+			'/v1/upload_file': `http://${BACKEND_HOST}:${RAG_PORT}`,
 
-			'/v1/rag': `http://${BACKEND_HOST}:8888`,
-			'/asr': `ws://${BACKEND_HOST}:10099`,
+			'/v1/rag': `http://${BACKEND_HOST}:${RAG_PORT}`,
+			'/asr': `ws://${BACKEND_HOST}:${ASR_WS_PORT}`,
 			'/backend': {
 				target: `http://${BACKEND_HOST}:${BACKEND_PORT}`,
 				changeOrigin: true,
@@ -42,18 +44,18 @@ export default defineConfig({
 				rewrite: path => path.replace(/^\/backend/, ''),
 			},
 			'/api': {
-				target: `http://${BACKEND_HOST}:8000`,
+				target: `http://${BACKEND_HOST}:${MAIN_API_PORT}`,
 				changeOrigin: true,
 				rewrite: path => path.replace(/^\/api/, ''),
 			},
 			'/api/ws': {
-				target: `http://${BACKEND_HOST}:8000`,
+				target: `http://${BACKEND_HOST}:${MAIN_API_PORT}`,
 				ws: true,
 				changeOrigin: true,
 				rewrite: path => path.replace(/^\/api/, ''),
 			},
 			'/ws': {
-				target: `http://${BACKEND_HOST}:8000`,
+				target: `http://${BACKEND_HOST}:${MAIN_API_PORT}`,
 				ws: true,
 				changeOrigin: true,
 				rewrite: path => path, // 不需要重写

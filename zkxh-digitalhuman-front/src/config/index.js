@@ -6,18 +6,23 @@
 // 检测是否为Electron环境
 const isElectron = window.electronAPI && window.electronAPI.isElectron;
 
+const BACKEND_HOST = import.meta.env.VITE_BACKEND_HOST || 'localhost';
+const BACKEND_PORT = import.meta.env.VITE_BACKEND_PORT || '8010';
+const MAIN_API_PORT = import.meta.env.VITE_MAIN_API_PORT || '8000';
+const ASR_WS_PORT = import.meta.env.VITE_ASR_WS_PORT || '10099';
+const RAG_PORT = import.meta.env.VITE_RAG_PORT || '8888';
+
 // 默认后端配置
 const DEFAULT_BACKEND_CONFIG = {
   // 主后端服务器
-  mainServer: '192.168.8.161:8010',
-  // mainServer: '127.0.0.1:8010',
+  mainServer: `${BACKEND_HOST}:${BACKEND_PORT}`,
 
   // API服务器映射
   apiServers: {
-    main: '192.168.8.161:8000',      // /api
-    backend: '192.168.8.161:8010',   // /backend
-    asr: '192.168.8.161:10099',      // /asr
-    rag: '192.168.8.161:8888',       // /v1/rag, /v1/upload_file
+    main: `${BACKEND_HOST}:${MAIN_API_PORT}`,      // /api
+    backend: `${BACKEND_HOST}:${BACKEND_PORT}`,   // /backend
+    asr: `${BACKEND_HOST}:${ASR_WS_PORT}`,      // /asr
+    rag: `${BACKEND_HOST}:${RAG_PORT}`,       // /v1/rag, /v1/upload_file
   },
   
   // WebSocket配置

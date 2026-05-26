@@ -314,7 +314,7 @@ const testWebrtc = async () => {
   pc.addTransceiver('audio', { direction: 'recvonly' })
   const offer = await pc.createOffer()
   await pc.setLocalDescription(offer)
-  const response = await fetch('http://116.177.238.84:8010/offer', {
+  const response = await fetch('http://your-server-host:8010/offer', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

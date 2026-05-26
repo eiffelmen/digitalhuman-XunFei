@@ -3,6 +3,18 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
+def envOrProperty = { name, defaultValue ->
+    def propertyValue = project.findProperty(name)
+    if (propertyValue != null && propertyValue.toString().trim()) {
+        return propertyValue.toString()
+    }
+    def envValue = System.getenv(name)
+    if (envValue != null && envValue.trim()) {
+        return envValue
+    }
+    return defaultValue
+}
+
 android {
     namespace 'com.example.myapplication'
     compileSdk 36
@@ -15,6 +27,13 @@ android {
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField "String", "SERVER_IP", "\"${envOrProperty('SERVER_IP', '127.0.0.1')}\""
+        buildConfigField "String", "AUDIO_DEVICE_IP", "\"${envOrProperty('AUDIO_DEVICE_IP', 'localhost')}\""
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     buildTypes {

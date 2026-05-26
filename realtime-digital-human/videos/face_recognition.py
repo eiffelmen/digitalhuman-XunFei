@@ -14,7 +14,7 @@ class ImageRequest(BaseModel):
 
 
 def send_face_detection_request(frame):
-    url = "http://10.100.10.31:8039/Face/DetRecTrack"
+    url = "http://your-server-host:8039/Face/DetRecTrack"
     _, buffer = cv2.imencode('.jpg', frame)
     image_data = base64.b64encode(buffer).decode('utf-8')
 

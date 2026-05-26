@@ -9,7 +9,7 @@ const isElectron = window.electronAPI && window.electronAPI.isElectron;
 // 默认后端配置
 const DEFAULT_BACKEND_CONFIG = {
   // 主后端服务器
-  mainServer: '36.103.180.159:8010',
+  mainServer: 'your-server-host:8010',
   // mainServer: '127.0.0.1:8010',
 
   // API服务器映射

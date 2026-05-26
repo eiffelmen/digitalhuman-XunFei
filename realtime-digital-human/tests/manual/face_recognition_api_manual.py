@@ -14,7 +14,7 @@ name_mapping = {
 class FaceRecognition:
     def __init__(self, video_path):
         self.video_path = video_path
-        self.url = "http://10.100.10.31:8039/Face/DetRecTrack"
+        self.url = "http://your-server-host:8039/Face/DetRecTrack"
 
     def send_face_detection_request(self, frame):
         _, buffer = cv2.imencode('.jpg', frame)

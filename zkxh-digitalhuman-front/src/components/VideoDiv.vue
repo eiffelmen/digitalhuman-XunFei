@@ -53,7 +53,7 @@ function start() {
 	// config.iceServers = [{ urls: ['stun:stun.yy.com:3478'] }]
 /* 	config.iceServers = [
 		{
-		  urls: 'turn:116.177.238.84:3478',
+		  urls: 'turn:your-server-host:3478',
 		  username: 'admin',
 		  credential: 'passwd123456'
 		},

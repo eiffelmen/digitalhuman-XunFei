@@ -398,7 +398,7 @@
         // 测试唤醒WebSocket接口
         function testWakeupWebSocket(sessionid) {
             const statusMessage = document.getElementById('status-message');
-            // const wsUrl = "ws://36.103.180.159:8000/ws?type=app&id=1";
+            // const wsUrl = "ws://your-server-host:8000/ws?type=app&id=1";
             const wsUrl = window.location.origin.replace(/^http/, 'ws').replace(/:[0-9]+$/, ':8000') + '/ws?type=app&id=1';
             // const wsUrl = window.location.origin.replace(/:[0-9]+$/, ':8010');
 

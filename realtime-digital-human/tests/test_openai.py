@@ -4,7 +4,7 @@ from openai import OpenAI
 from openai import AuthenticationError
 
 # 内部大模型测试
-BASE_URL = "http://10.100.10.31:8019/v1"
+BASE_URL = "http://your-server-host:8019/v1"
 API_KEY = "your-api-key"
 MODEL_NAME = "qwen2.5_1_5b_20250707"
 

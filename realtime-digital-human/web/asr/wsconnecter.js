@@ -14,7 +14,7 @@ function WebSocketConnectMethod( config ) { //定义socket连接方法类
 	var stateHandle = config.stateHandle;
 			  
 	this.wsStart = function () {
-		var Uri = document.getElementById('wssip').value; //"wss://111.205.137.58:5821/wss/" //设置wss asr online接口地址 如 wss://X.X.X.X:port/wss/
+		var Uri = document.getElementById('wssip').value; //"wss://X.X.X.X:5821/wss/" //设置wss asr online接口地址 如 wss://X.X.X.X:port/wss/
 		if(Uri.match(/wss:\S*|ws:\S*/))
 		{
 			console.log("Uri"+Uri);

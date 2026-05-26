@@ -28,7 +28,7 @@ cd ..
 python upload_api.py
 ```
 
-测试接口：http://10.100.10.31:8086/v1/upload/
+测试接口：http://your-server-host:8086/v1/upload/
 
 3.2 视频本地数字人处理
 
@@ -39,12 +39,12 @@ python digitalman_api.py --host 0.0.0.0 --port 8085
 后端得到数字人处理后的文件 ./data/avatars/wav2lip_avatar4 中包含face_imgs、full_imgs和full_masks三个文件夹和coords.pkl，分别代表数字人面部图像、全身图像、全身mask和全身坐标信息。
 
 1. 本地视频处理接口
-- URL: `http://10.100.10.31:8085/v1/process_video/`
+- URL: `http://your-server-host:8085/v1/process_video/`
 - 方法: POST
 - 用途: 处理上传的视频文件，返回数字人ID
 
 2. 视频链接处理接口
-- URL: `http://10.100.10.31:8085/v1/process_video_url/`
+- URL: `http://your-server-host:8085/v1/process_video_url/`
 - 方法: POST
 - 用途: 处理视频链接，返回数字人ID
 

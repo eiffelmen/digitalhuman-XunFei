@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 def test_upload_video(video_path):
-    url = "http://10.100.10.31:8086/v1/upload"
+    url = "http://your-server-host:8086/v1/upload"
 
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"文件未找到: {video_path}")

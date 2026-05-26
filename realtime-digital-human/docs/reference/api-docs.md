@@ -2,7 +2,7 @@
 
 1. 视频转视频链接
 
-   \- URL: `http://10.100.10.31:8086/v1/upload`
+   \- URL: `http://your-server-host:8086/v1/upload`
 
    \- 方法: POST
 
@@ -35,7 +35,7 @@
 
    2.1 处理视频链接
 
-   \- URL: `http://10.100.10.31:8085/v1/process_video_url`
+   \- URL: `http://your-server-host:8085/v1/process_video_url`
 
    \- 方法: POST
 
@@ -48,7 +48,7 @@
 
    \- 命令行调用
    ```shell
-   curl -X POST http://10.100.10.31:8085/v1/process_video \
+   curl -X POST http://your-server-host:8085/v1/process_video \
       -F "video=@/Data1/home/luoling/realtime-digitalhuman-v2/data/videos/lishuang.mp4" \
       -H "Content-Type: multipart/form-data"
    ```
@@ -85,7 +85,7 @@
 
    2.2 处理上传的视频文件
 
-   \- URL: `http://10.100.10.31:8085/v1/process_video`
+   \- URL: `http://your-server-host:8085/v1/process_video`
 
    \- 方法: POST
 
@@ -135,7 +135,7 @@
 
 3. 删除指定的ID，但禁止删除ID模板1, 2, 3
 
-   \- 接口地址: `http://10.100.10.31:8085/v1/delete_avatar/{avatar_id}`
+   \- 接口地址: `http://your-server-host:8085/v1/delete_avatar/{avatar_id}`
 
    \- 方法: DELETE
 
@@ -181,7 +181,7 @@
 
 4. 获取 webrtc 视频
 
-   \- 接口地址: `http://10.100.10.31:8010/offer`
+   \- 接口地址: `http://your-server-host:8010/offer`
 
    \- 方法: POST
 
@@ -221,7 +221,7 @@
 
 5. 向数字人发送聊天内容
    
-   \- 接口地址: `http://10.100.10.31:8010/human`
+   \- 接口地址: `http://your-server-host:8010/human`
 
    \- 方法: POST
 
@@ -248,7 +248,7 @@
 
 6. ~~数字人ID切换~~
    
-   \- 接口地址: `http://10.100.10.31:8010/change_avatar`
+   \- 接口地址: `http://your-server-host:8010/change_avatar`
 
    \- 方法: POST
 
@@ -280,7 +280,7 @@
 
    该接口用于设置数字人配置的默认资产，包括ID、音色和背景图片。在确认配置之前，它会检查所需资源是否存在于服务器上。
    
-   \- 接口地址: `http://10.100.10.31:8011/update_config`
+   \- 接口地址: `http://your-server-host:8011/update_config`
 
    \- 方法: POST
 
@@ -335,7 +335,7 @@
 
    \- 指定用户读 “先帝创业未半而中道崩殂，今天下三分，益州疲弊，此诚危急存亡之秋也”素材。
 
-   \- 接口地址: `http://10.100.10.31:8088/v1/upload_audio`
+   \- 接口地址: `http://your-server-host:8088/v1/upload_audio`
 
    \- 方法: POST
 
@@ -374,7 +374,7 @@
 
 9. 删除用户音频
     
-   \- 接口地址: http://10.100.10.31:8088/v1/delete_audio/{avatar_audio}
+   \- 接口地址: http://your-server-host:8088/v1/delete_audio/{avatar_audio}
 
    \- 方法: DELETE 
 
@@ -421,7 +421,7 @@
 
 10. 上传用户自定义背景图模版
     
-    \- 接口地址: `http://10.100.10.31:8088/v1/upload_image`
+    \- 接口地址: `http://your-server-host:8088/v1/upload_image`
 
       \- 方法: POST
 
@@ -462,7 +462,7 @@
 
 11. 删除用户自定义背景图模版
     
-      \- 接口地址: http://10.100.10.31:8088/v1/delete_image/{avatar_bg}
+      \- 接口地址: http://your-server-host:8088/v1/delete_image/{avatar_bg}
 
       \- 方法: DELETE 
 
@@ -510,7 +510,7 @@
 
       该接口用于重新加载数字人的配置，包括头像、背景图和其他相关设置。
 
-      \- 接口地址: `http://10.100.10.31:8011/reload_config`
+      \- 接口地址: `http://your-server-host:8011/reload_config`
 
       \- 方法: POST
 
@@ -542,7 +542,7 @@
 
    该接口用于处理视频 URL，并生成任务 ID 以供轮询查看进度。
 
-   - 接口地址: `http://10.100.10.31:8085/v1/process_video_url`
+   - 接口地址: `http://your-server-host:8085/v1/process_video_url`
 
    - 方法: POST
 
@@ -580,7 +580,7 @@
 
    该接口用于查询视频处理任务的状态。
 
-   - 接口地址: `http://10.100.10.31:8085/v1/check_status/{task_id}`
+   - 接口地址: `http://your-server-host:8085/v1/check_status/{task_id}`
 
    - 方法: GET
 
@@ -621,7 +621,7 @@
     
    该接口用于生成用户唯一的 sessionID
 
-   - 接口地址: `http://10.100.10.31:8010/generate_session`
+   - 接口地址: `http://your-server-host:8010/generate_session`
    - 方法: POST
    - Content-Type: application/json
 

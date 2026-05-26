@@ -2,7 +2,7 @@
 
 # ================= 配置区域 =================
 # 仓库地址
-REGISTRY="36.103.180.159:8099"
+REGISTRY="${REGISTRY:-registry.example.com:8099}"
 # 项目名
 PROJECT="digitalhuman"
 # 应用名

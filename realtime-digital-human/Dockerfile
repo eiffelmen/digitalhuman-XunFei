@@ -1,5 +1,5 @@
 # FROM nvidia/cuda:12.9.1-runtime-ubuntu22.04
-# FROM 36.103.180.159:8099/digitalhuman/nvidia/cuda:12.4.1-devel-ubuntu22.04
+# FROM your-server-host:8099/digitalhuman/nvidia/cuda:12.4.1-devel-ubuntu22.04
 
 # cuda向后兼容，这里python安装cuda12.6的pytorch，宿主机的cuda环境大于等于12.6即可
 FROM python:3.12-slim

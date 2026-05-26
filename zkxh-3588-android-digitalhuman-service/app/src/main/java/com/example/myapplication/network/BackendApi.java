@@ -28,7 +28,7 @@ public class BackendApi {
 
     // 替换为您的后端服务器地址和端口
 //    private static final String BACKEND_URL = "http://your-backend-server.com:8080/upload_data";
-//    private static final String BACKEND_URL = "http://10.100.10.31:8010/human";
+//    private static final String BACKEND_URL = "http://your-server-host:8010/human";
     private static final String BASE_URL = "http://"+ AppConstants.SERVER_IP+ ":8000";
     private static final String BACKEND_URL = BASE_URL + "/asr_result2";
     private static final String DEVICE_REGISTER_URL = BASE_URL + "/device_register";

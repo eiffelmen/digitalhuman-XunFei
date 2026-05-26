@@ -45,7 +45,7 @@ pip install -U modelscope
 
 ## 历史前端与附属服务说明
 
-- 旧前端地址示例：`https://10.100.10.31`
+- 旧前端地址示例：`https://your-server-host`
 - 历史说明里引用过 `digitalhuman-web/README.md`
 
 启动 ASR 识别服务：
@@ -92,7 +92,7 @@ export VLLM_ENABLE_V1_MULTIPROCESSING=0
 CUDA_VISIBLE_DEVICES=4 \
 vllm serve /Data3/liwenjie/AI-ModelScope/qwen/Qwen2.5-1.5B-Instruct \
   --served-model-name qwen2.5_1_5b_20241102 \
-  --api-key token-abc123 \
+  --api-key your-vllm-api-key \
   --gpu-memory-utilization=0.5 \
   --enforce-eager \
   --max-model-len 32768 \

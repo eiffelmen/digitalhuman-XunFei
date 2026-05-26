@@ -3,7 +3,7 @@ import requests
 
 
 def main():
-    base_url = "http://10.100.10.31:8085"
+    base_url = "http://your-server-host:8085"
     video_url = "https://oss.minio.ratuads.com:8143/laboratory/file/2940d3f1-eed6-4c77-a2fa-5edfad62151a.mp4"
 
     submit_url = f"{base_url}/v1/process_video_url"

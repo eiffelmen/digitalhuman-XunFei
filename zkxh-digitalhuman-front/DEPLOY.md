@@ -26,7 +26,7 @@ git push origin feat/你的功能名
 
 ```bash
 docker build -t front:test .
-docker run --rm -p 8080:80 -e BACKEND_HOST=36.103.180.159 front:test
+docker run --rm -p 8080:80 -e BACKEND_HOST=your-server-host front:test
 # 浏览器访问 http://localhost:8080 验证功能
 ```
 
@@ -62,7 +62,7 @@ bash deploy.sh v1.2.0
 
 ```bash
 # 查看可用的历史版本
-docker images 36.103.180.159:8099/digitalhuman/front
+docker images your-server-host:8099/digitalhuman/front
 
 # 切换到指定版本
 bash deploy.sh 20260326120000

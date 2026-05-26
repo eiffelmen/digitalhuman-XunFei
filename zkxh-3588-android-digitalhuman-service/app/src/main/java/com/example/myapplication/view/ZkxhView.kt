@@ -98,7 +98,7 @@ class ZkxhView @JvmOverloads constructor(
         zkxhWebView?.apply {
             if (isNetworkAvailable) {
                 this.loadUrl("http://" + AppConstants.SERVER_IP + "/")
-//                this.loadUrl("http://192.168.110.113:3001/")
+//                this.loadUrl("http://your-server-host:3001/")
             } else {
                 // 网络不可用，等待网络连接后再加载
                 waitForNetworkAndLoad()
@@ -205,7 +205,7 @@ class ZkxhView @JvmOverloads constructor(
                     zkxhWebView?.let { webView ->
                         if (webView.url.isNullOrEmpty()) {
                             webView.loadUrl("http://" + AppConstants.SERVER_IP + "/")
-//                            webView.loadUrl("http://192.168.110.113:3001/")
+//                            webView.loadUrl("http://your-server-host:3001/")
                         }
                     }
                 }
@@ -237,7 +237,7 @@ class ZkxhView @JvmOverloads constructor(
         postDelayed({
             if (isNetworkAvailable) {
                 zkxhWebView?.loadUrl("http://" + AppConstants.SERVER_IP + "/")
-//                zkxhWebView?.loadUrl("http://192.168.110.113:3001/")
+//                zkxhWebView?.loadUrl("http://your-server-host:3001/")
 
             } else {
                 // 如果30秒后网络仍然不可用，尝试重试加载

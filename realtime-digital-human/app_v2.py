@@ -702,7 +702,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--TTS_SERVER",
         type=str,
-        default="http://10.100.10.31:9880",
+        default=os.getenv("TTS_SERVER", "http://localhost:8779"),
         help="TTS服务器地址",
     )
     parser.add_argument(

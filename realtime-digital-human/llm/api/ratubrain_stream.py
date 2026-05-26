@@ -1,11 +1,24 @@
 import json
 import time
 import uuid
+import os
 import aiohttp
 
 from loguru import logger
 
-API_KEY = "d1772fa6d39bb900efd9e9dd8f2685b6"
+
+def _get_required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"缺少环境变量: {name}")
+    return value
+
+
+def _ratubrain_config() -> tuple[str, str]:
+    return (
+        _get_required_env("RATUBRAIN_BASE_URL"),
+        _get_required_env("RATUBRAIN_API_KEY"),
+    )
 
 
 async def chat_request(goal, temperature=0, sessionid="1"):
@@ -19,8 +32,15 @@ async def chat_request_streaming(goal, queue, temperature=0, sessionid="1"):
     first_token_received = False
     async with aiohttp.ClientSession() as session:
         try:
+            base_url, api_key = _ratubrain_config()
             async with session.get(
-                    f'https://ratubrain.com/api/ai/chat/stream/start_chat/get?goal={goal}&token={API_KEY}&chat_id={sessionid}&token_sleep=0'
+                base_url,
+                params={
+                    "goal": goal,
+                    "token": api_key,
+                    "chat_id": sessionid,
+                    "token_sleep": 0,
+                },
             ) as response:
                 buffer = []
                 complete_response = []

@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import uuid
 
@@ -6,8 +7,12 @@ from sseclient import SSEClient
 
 
 def message_generator(goal, token, sessionid="0"):
+    base_url = os.getenv(
+        "RATUBRAIN_BASE_URL",
+        "https://test.ratubrain.com/api/ai/chat/stream/start_chat/get",
+    )
     messages = SSEClient(
-        f'https://test.ratubrain.com/api/ai/chat/stream/start_chat/get?goal={goal}&token={token}&chat_id={sessionid}&token_sleep=0')
+        f'{base_url}?goal={goal}&token={token}&chat_id={sessionid}&token_sleep=0')
 
     start_time = time.time()
     first_token_received = False
@@ -33,8 +38,9 @@ def message_generator(goal, token, sessionid="0"):
             yield token_value
 
 
-goal = "介绍一下中科智汇工厂"
-token = "a52d48b4ffc969cc3d687f5679f8664f"
+if __name__ == "__main__":
+    goal = "介绍一下中科智汇工厂"
+    token = os.getenv("RATUBRAIN_API_KEY", "test-ratubrain-token")
 
-for token_value in message_generator(goal, token, sessionid=uuid.uuid4()):
-    print(token_value, end="", flush=True)
+    for token_value in message_generator(goal, token, sessionid=uuid.uuid4()):
+        print(token_value, end="", flush=True)

@@ -28,17 +28,17 @@ import { buildApiUrl } from '@/config';
 // 调用主服务器接口
 const url = buildApiUrl('main', '/api/user/info');
 // 浏览器环境: /api/api/user/info (通过 Vite 代理转发)
-// Electron环境: http://36.103.180.159:8000/api/user/info
+// Electron环境: http://your-server-host:8000/api/user/info
 
 // 调用后端服务器接口
 const url = buildApiUrl('backend', '/human');
 // 浏览器环境: /backend/human
-// Electron环境: http://36.103.180.159:8010/human
+// Electron环境: http://your-server-host:8010/human
 
 // 调用 RAG 服务器接口
 const url = buildApiUrl('rag', '/v1/rag');
 // 浏览器环境: /v1/rag
-// Electron环境: http://36.103.180.159:8888/v1/rag
+// Electron环境: http://your-server-host:8888/v1/rag
 ```
 
 **实际应用场景**:
@@ -79,12 +79,12 @@ import { buildWsUrl } from '@/config';
 // 连接主服务器 WebSocket
 const wsUrl = buildWsUrl('main', '/ws/asr');
 // 浏览器环境: ws://localhost:3000/ws/asr
-// Electron环境: ws://36.103.180.159:8000/ws/asr
+// Electron环境: ws://your-server-host:8000/ws/asr
 
 // 连接 LLM WebSocket
 const llmUrl = buildWsUrl('llm', `/ws/${sessionId}`);
 // 浏览器环境: ws://localhost:3000/llm/ws/xxx
-// Electron环境: ws://36.103.180.159:8011/ws/xxx
+// Electron环境: ws://your-server-host:8011/ws/xxx
 ```
 
 **实际应用场景**:
@@ -172,10 +172,10 @@ import { getPublicUrl } from '@/utils/getAssets';
 
 | serverKey | 服务器地址 | 浏览器代理前缀 | 用途说明 |
 |-----------|-----------|---------------|---------|
-| main | 36.103.180.159:8000 | /api | 主服务器，WebSocket、通用接口 |
-| backend | 36.103.180.159:8010 | /backend | 后端服务，数字人控制接口 |
-| asr | 36.103.180.159:10099 | /asr | 语音识别服务 |
-| rag | 36.103.180.159:8888 | (空字符串) | RAG知识库服务 |
+| main | your-server-host:8000 | /api | 主服务器，WebSocket、通用接口 |
+| backend | your-server-host:8010 | /backend | 后端服务，数字人控制接口 |
+| asr | your-server-host:10099 | /asr | 语音识别服务 |
+| rag | your-server-host:8888 | (空字符串) | RAG知识库服务 |
 
 ---
 
@@ -189,15 +189,15 @@ import { getPublicUrl } from '@/utils/getAssets';
 
 ```javascript
 const DEFAULT_BACKEND_CONFIG = {
-  mainServer: '36.103.180.159:8010',
+  mainServer: 'your-server-host:8010',
   
   apiServers: {
-    main: '36.103.180.159:8000',
-    backend: '36.103.180.159:8010',
+    main: 'your-server-host:8000',
+    backend: 'your-server-host:8010',
     // ... 其他配置 ...
     
     // 新增服务器配置
-    newService: '192.168.1.100:9000',  // ✅ 添加这一行
+    newService: 'your-server-host:9000',  // ✅ 添加这一行
   },
   
   websocket: {
@@ -232,13 +232,13 @@ export function buildApiUrl(serverKey, path) {
 export default defineConfig({
   server: {
     proxy: {
-      '/v1/upload_file': 'http://36.103.180.159:8888',
-      '/v1/rag': 'http://36.103.180.159:8888',
+      '/v1/upload_file': 'http://your-server-host:8888',
+      '/v1/rag': 'http://your-server-host:8888',
       // ... 其他代理配置 ...
       
       // ✅ 添加新服务的代理配置
       '/new_service': {
-        target: 'http://192.168.1.100:9000',
+        target: 'http://your-server-host:9000',
         changeOrigin: true,
         rewrite: path => path.replace(/^\/new_service/, ''),
       },
@@ -267,7 +267,7 @@ const socket = new WebSocket(wsUrl);
 ## 四、完整示例：添加 TTS 语音合成服务
 
 假设要添加一个新的 TTS 服务：
-- 服务器地址: `36.103.180.159:7000`
+- 服务器地址: `your-server-host:7000`
 - 代理前缀: `/tts`
 
 ### 1. 修改 `src/config/index.js`
@@ -275,11 +275,11 @@ const socket = new WebSocket(wsUrl);
 ```javascript
 const DEFAULT_BACKEND_CONFIG = {
   apiServers: {
-    main: '36.103.180.159:8000',
-    backend: '36.103.180.159:8010',
-    llm: '36.103.180.159:8011',
-    asr: '36.103.180.159:10099',
-    tts: '36.103.180.159:7000',  // ✅ 新增
+    main: 'your-server-host:8000',
+    backend: 'your-server-host:8010',
+    llm: 'your-server-host:8011',
+    asr: 'your-server-host:10099',
+    tts: 'your-server-host:7000',  // ✅ 新增
     // ... 其他配置
   },
 };
@@ -305,7 +305,7 @@ export default defineConfig({
       // ... 其他代理配置
       
       '/tts': {
-        target: 'http://36.103.180.159:7000',
+        target: 'http://your-server-host:7000',
         changeOrigin: true,
         rewrite: path => path.replace(/^\/tts/, ''),
       },
@@ -354,16 +354,16 @@ function connectTTSStream() {
 
 | serverKey | path | 浏览器环境（开发） | Electron环境 |
 |-----------|------|------------------|-------------|
-| main | /user/info | `/api/user/info` | `http://36.103.180.159:8000/user/info` |
-| backend | /human | `/backend/human` | `http://36.103.180.159:8010/human` |
-| rag | /v1/rag | `/v1/rag` | `http://36.103.180.159:8888/v1/rag` |
+| main | /user/info | `/api/user/info` | `http://your-server-host:8000/user/info` |
+| backend | /human | `/backend/human` | `http://your-server-host:8010/human` |
+| rag | /v1/rag | `/v1/rag` | `http://your-server-host:8888/v1/rag` |
 
 ### buildWsUrl 返回值对比
 
 | serverKey | path | 浏览器环境（开发） | Electron环境 |
 |-----------|------|------------------|-------------|
-| main | /ws/asr | `ws://localhost:3000/ws/asr` | `ws://36.103.180.159:8000/ws/asr` |
-| llm | /ws/chat | `ws://localhost:3000/llm/ws/chat` | `ws://36.103.180.159:8011/ws/chat` |
+| main | /ws/asr | `ws://localhost:3000/ws/asr` | `ws://your-server-host:8000/ws/asr` |
+| llm | /ws/chat | `ws://localhost:3000/llm/ws/chat` | `ws://your-server-host:8011/ws/chat` |
 
 ### getPublicUrl 返回值
 
@@ -425,7 +425,7 @@ RAG 服务的接口路径本身就是 `/v1/rag`，不需要额外的代理前缀
 2. **避免硬编码**: 永远不要在代码中直接写服务器地址
    ```javascript
    // ❌ 错误示例
-   fetch('http://36.103.180.159:8000/api/user')
+   fetch('http://your-server-host:8000/api/user')
    
    // ✅ 正确示例
    fetch(buildApiUrl('main', '/api/user'))
