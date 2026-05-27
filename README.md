@@ -75,4 +75,30 @@ GITHUB_TOKEN=<your-github-token> bash scripts/bootstrap_ubuntu.sh
 
 百度网盘分享链接不是普通直链，`curl`/`wget` 通常无法直接下载。脚本会在检测到已安装并已登录的 `BaiduPCS-Go` 时尝试通过网盘分享链接下载；否则请先手动下载三个文件，或放到一个可直接访问的 HTTP 文件服务器。
 
+## 后台启动脚本
+
+环境准备完成，并填写 `/opt/digitalhuman/be/.env` 后，可执行后台启动脚本：
+
+```bash
+cd /opt/digitalhuman/src
+bash scripts/start_services.sh
+```
+
+脚本会后台启动实时数字人后端、device 服务，并构建/启动前端 Docker 容器。默认日志位置：
+
+```bash
+tail -f /opt/digitalhuman/logs/realtime.log
+tail -f /opt/digitalhuman/logs/device.log
+docker logs -f frontend
+```
+
+如需使用已有前端镜像而不是本机构建，可指定：
+
+```bash
+FRONTEND_IMAGE=your-registry.example.com/digitalhuman/front:latest \
+PULL_FRONTEND_IMAGE=1 \
+BACKEND_HOST=host.docker.internal \
+bash scripts/start_services.sh
+```
+
 各子项目的详细启动方式见对应目录下的 README。
