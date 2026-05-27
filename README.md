@@ -75,6 +75,73 @@ GITHUB_TOKEN=<your-github-token> bash scripts/bootstrap_ubuntu.sh
 
 百度网盘分享链接不是普通直链，`curl`/`wget` 通常无法直接下载。脚本会在检测到已安装并已登录的 `BaiduPCS-Go` 时尝试通过网盘分享链接下载；否则请先手动下载三个文件，或放到一个可直接访问的 HTTP 文件服务器。
 
+## 后端 `.env` 配置
+
+`/opt/digitalhuman/be/.env` 是实时数字人后端的运行配置，主要控制监听端口、LLM 提供商、TTS 服务地址和密钥。先从模板复制一份：
+
+```bash
+cd /opt/digitalhuman/be
+cp .env.template .env
+nano .env
+```
+
+如果使用讯飞 AIUI 作为大模型回复，推荐写成下面这样：
+
+```bash
+LLM_PROVIDER=iflytek
+LISTEN_PORT=8010
+
+IFLYTEK_WS_URL=wss://aiui.xf-yun.com/v3/aiint/sos
+IFLYTEK_APPID=your-iflytek-appid
+IFLYTEK_API_KEY=your-iflytek-api-key
+IFLYTEK_API_SECRET=your-iflytek-api-secret
+IFLYTEK_SCENE=main_box
+IFLYTEK_VCN=x5_lingxiaoyue_flow
+IFLYTEK_TIMEOUT=30
+
+TTS_TYPE=sparktts
+TTS_SERVER=http://127.0.0.1:8779
+TTS_SERVICE=http://127.0.0.1:8779
+```
+
+如果使用 OpenAI 兼容接口作为大模型回复，例如本地 vLLM、第三方模型服务或公安大模型接口，则写成下面这样：
+
+```bash
+LLM_PROVIDER=gongan
+LISTEN_PORT=8010
+
+BASE_URL=https://your-llm-endpoint.example.com/v1
+API_KEY=your-api-key
+MODEL_NAME=your-model-name
+
+TTS_TYPE=sparktts
+TTS_SERVER=http://127.0.0.1:8779
+TTS_SERVICE=http://127.0.0.1:8779
+```
+
+如果使用阿里 DashScope，则最小配置为：
+
+```bash
+LLM_PROVIDER=aliyun
+LISTEN_PORT=8010
+
+DASHSCOPE_API_KEY=your-dashscope-api-key
+
+TTS_TYPE=sparktts
+TTS_SERVER=http://127.0.0.1:8779
+TTS_SERVICE=http://127.0.0.1:8779
+```
+
+字段说明：
+
+- `LLM_PROVIDER`：选择大模型提供商，常用值为 `iflytek`、`gongan`、`aliyun`、`rag`、`ratubrain`。
+- `LISTEN_PORT`：实时数字人后端端口，前端默认代理到 `8010`，建议保持 `8010`。
+- `IFLYTEK_APPID`、`IFLYTEK_API_KEY`、`IFLYTEK_API_SECRET`：讯飞 AIUI 控制台中的应用凭证。
+- `BASE_URL`、`API_KEY`、`MODEL_NAME`：OpenAI 兼容接口的大模型地址、密钥和模型名。
+- `DASHSCOPE_API_KEY`：阿里 DashScope API Key。
+- `TTS_TYPE`：语音合成类型，当前常用 `sparktts`；代码还支持 `edgetts`、`gpt-sovits`、`gpt-sovits-v2`、`cosyvoice`、`fishtts`、`flashtts`。
+- `TTS_SERVER` / `TTS_SERVICE`：TTS 服务地址。若 TTS 服务和后端在同一台机器，通常写 `http://127.0.0.1:8779`。
+
 ## 后台启动脚本
 
 环境准备完成，并填写 `/opt/digitalhuman/be/.env` 后，可执行后台启动脚本：
