@@ -42,4 +42,37 @@ ls -lh /opt/digitalhuman/be/data/avatars/wav2lip_avatar11/coords.pkl
 - 后端默认数字人形象为 `wav2lip_avatar11`，资源来自 `data/avatars/wav2lip_avatar11/`。
 - `node_modules/`、`.venv/`、`dist/`、Android `build/`、压缩包和 APK 都不作为源码提交，需要时重新安装或重新构建。
 
+## 全新 Ubuntu 环境准备脚本
+
+仓库提供了 `scripts/bootstrap_ubuntu.sh`，用于在全新的 Ubuntu 服务器上准备运行环境。脚本会安装系统依赖、安装 `uv`、拉取/更新项目代码、创建 `/opt/digitalhuman` 兼容目录、安装后端和设备服务的 Python 依赖、生成前端容器使用的自签名证书，并放置三个运行大文件。
+
+推荐先把三个大文件下载到服务器某个目录，例如 `/tmp/digitalhuman-assets`，再执行：
+
+```bash
+sudo mkdir -p /opt/digitalhuman
+sudo chown -R $USER:$USER /opt/digitalhuman
+git clone https://github.com/eiffelmen/digitalhuman-XunFei.git /opt/digitalhuman/src
+cd /opt/digitalhuman/src
+ASSET_SOURCE_DIR=/tmp/digitalhuman-assets bash scripts/bootstrap_ubuntu.sh
+```
+
+也可以提供普通 HTTP 文件目录或单文件直链：
+
+```bash
+ASSET_BASE_URL=http://your-file-server/digitalhuman-assets bash scripts/bootstrap_ubuntu.sh
+
+VIDEO_URL=http://your-file-server/反诈视频.mp4 \
+WAV2LIP_URL=http://your-file-server/wav2lip.pth \
+DATA_ZIP_URL=http://your-file-server/data.zip \
+bash scripts/bootstrap_ubuntu.sh
+```
+
+如果使用私有 GitHub 仓库，可通过 `GITHUB_TOKEN` 授权拉取代码：
+
+```bash
+GITHUB_TOKEN=<your-github-token> bash scripts/bootstrap_ubuntu.sh
+```
+
+百度网盘分享链接不是普通直链，`curl`/`wget` 通常无法直接下载。脚本会在检测到已安装并已登录的 `BaiduPCS-Go` 时尝试通过网盘分享链接下载；否则请先手动下载三个文件，或放到一个可直接访问的 HTTP 文件服务器。
+
 各子项目的详细启动方式见对应目录下的 README。
