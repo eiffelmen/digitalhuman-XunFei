@@ -27,6 +27,7 @@ from aiortc import (
     RTCConfiguration,
 )
 from mylogger import logger
+from perf_logger import elapsed_ms, log_perf, now, perf_timer
 
 
 class AppState:
@@ -92,12 +93,13 @@ def build_nerfreal(session_id, opt, model, state: AppState):
     """
     创建并返回一个 LipReal 实例
     """
-    opt.sessionid = session_id
-    if opt.model == "wav2lip":
-        from lipreal import LipReal
+    with perf_timer("business", "build_nerfreal", sessionid=session_id, model=opt.model):
+        opt.sessionid = session_id
+        if opt.model == "wav2lip":
+            from lipreal import LipReal
 
-        nerfreal = LipReal(opt, state.model, state.avatar)
-    return nerfreal
+            nerfreal = LipReal(opt, state.model, state.avatar)
+        return nerfreal
 
 def stop_nerfreal_instance(nerfreal: LipReal):
     """
@@ -147,14 +149,18 @@ async def offer(request):
     """
     处理 WebRTC 连接请求，生成 answer，并返回 sessionid
     """
+    request_start = now()
     state = request.app["state"]
+    parse_start = now()
     params = await request.json()
+    parse_duration_ms = elapsed_ms(parse_start)
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
     sessionid = params["sessionid"]
     logger.info(f"接收到offer请求 sessionid={sessionid}")
 
     try:
+        build_start = now()
         # 创建数字人实例并添加到 session_manager
         nerfreal = await asyncio.wait_for(
             asyncio.get_event_loop().run_in_executor(
@@ -162,6 +168,7 @@ async def offer(request):
             ),
             timeout=120.0,
         )
+        build_duration_ms = elapsed_ms(build_start)
 
         state.nerfreals[sessionid] = nerfreal
         logger.info(
@@ -215,9 +222,11 @@ async def offer(request):
     transceiver.setCodecPreferences(preferences)
 
     try:
+        webrtc_start = now()
         await pc.setRemoteDescription(offer)
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
+        webrtc_duration_ms = elapsed_ms(webrtc_start)
     except Exception as e:
         logger.error(f"设置WebRTC描述失败: {str(e)}")
         return web.Response(
@@ -230,6 +239,16 @@ async def offer(request):
             "type": pc.localDescription.type,
             "sessionid": sessionid,
         }
+    )
+    log_perf(
+        "business",
+        "offer",
+        elapsed_ms(request_start),
+        sessionid=sessionid,
+        parse_ms=f"{parse_duration_ms:.2f}",
+        build_nerfreal_ms=f"{build_duration_ms:.2f}",
+        webrtc_ms=f"{webrtc_duration_ms:.2f}",
+        device="cpu",
     )
     return web.Response(content_type="application/json", text=response_content)
 
@@ -259,8 +278,11 @@ async def human(request):
     大模型回复接口
     处理用户发送的聊天或 echo 请求
     """
+    request_start = now()
     state = request.app["state"]
+    parse_start = now()
     params = await request.json()
+    parse_duration_ms = elapsed_ms(parse_start)
 
     # 手动校验 sessionid
     sessionid = params.get("sessionid", 0)
@@ -277,6 +299,16 @@ async def human(request):
         return web.json_response({"code": 400, "message": "缺少必要参数: text"}, status=400)
 
     logger.info(f"会话ID: {sessionid}")
+    log_perf(
+        "business",
+        "human_validate",
+        elapsed_ms(request_start),
+        sessionid=sessionid,
+        request_type=params.get("type"),
+        parse_ms=f"{parse_duration_ms:.2f}",
+        text_len=len(params.get("text", "")),
+        device="cpu",
+    )
 
     # 处理中断请求
     if params.get("interrupt"):
@@ -295,6 +327,7 @@ async def human(request):
 
 async def _handle_echo_request(params, sessionid, nerfreal, state: AppState):
     """处理echo请求"""
+    start = now()
     logger.info(f"echo请求内容: {params['text']}")
     nerfreal.put_msg_txt(params["text"])
     msg_id = str(uuid.uuid4())
@@ -305,9 +338,18 @@ async def _handle_echo_request(params, sessionid, nerfreal, state: AppState):
         await ws.send_json({"data": params["text"], "id": msg_id, "finish": False})
         await ws.send_json({"data": "", "id": msg_id, "finish": True})
 
-    return web.Response(
+    response = web.Response(
         content_type="application/json", text=json.dumps({"code": 0, "data": "ok"})
     )
+    log_perf(
+        "business",
+        "echo",
+        elapsed_ms(start),
+        sessionid=sessionid,
+        text_len=len(params["text"]),
+        device="cpu",
+    )
+    return response
 
 
 def _get_llm_response():
@@ -330,6 +372,28 @@ def _get_llm_response():
     return llm_response
 
 
+def _timed_llm_response(llm_response, message, nerfreal, sessionid, result_queue):
+    provider = os.environ.get("LLM_PROVIDER", "gongan")
+    start = now()
+    success = True
+    try:
+        return llm_response(message, nerfreal, sessionid, result_queue)
+    except Exception:
+        success = False
+        raise
+    finally:
+        log_perf(
+            "llm",
+            "response_total",
+            elapsed_ms(start),
+            provider=provider,
+            sessionid=sessionid,
+            text_len=len(message),
+            device="external",
+            success=success,
+        )
+
+
 async def _llm_response_consumer(state: AppState):
     """后台任务：消费 LLM 响应队列并发送 WebSocket"""
     while True:
@@ -350,6 +414,7 @@ async def _llm_response_consumer(state: AppState):
 
 async def _handle_chat_request(params, sessionid, nerfreal, state: AppState):
     """处理chat请求"""
+    start = now()
     llm_response = _get_llm_response()
     # 创建队列用于接收 LLM 响应
     result_queue = asyncio.Queue()
@@ -358,6 +423,7 @@ async def _handle_chat_request(params, sessionid, nerfreal, state: AppState):
     # 注意：即使 ws 不存在，也应调用 LLM（结果通过数字人音频输出）
     asyncio.get_event_loop().run_in_executor(
         None,
+        _timed_llm_response,
         llm_response,
         params["text"],
         nerfreal,
@@ -365,9 +431,19 @@ async def _handle_chat_request(params, sessionid, nerfreal, state: AppState):
         result_queue,
     )
 
-    return web.Response(
+    response = web.Response(
         content_type="application/json", text=json.dumps({"code": 0, "data": "ok"})
     )
+    log_perf(
+        "business",
+        "chat_dispatch",
+        elapsed_ms(start),
+        sessionid=sessionid,
+        provider=os.environ.get("LLM_PROVIDER", "gongan"),
+        text_len=len(params["text"]),
+        device="cpu",
+    )
+    return response
 
 
 async def set_audiotype(request):

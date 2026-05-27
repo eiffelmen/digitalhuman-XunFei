@@ -14,6 +14,7 @@ from io import BytesIO
 from loguru import logger
 from typing import Iterator
 from threading import Thread
+from perf_logger import elapsed_ms, log_perf, now
 
 
 class State(Enum):
@@ -54,7 +55,25 @@ class BaseTTS(object):
                 self.state = State.RUNNING
             except queue.Empty:
                 continue
-            self.txt_to_audio(msg)
+            start = now()
+            success = True
+            try:
+                self.txt_to_audio(msg)
+            except Exception:
+                success = False
+                raise
+            finally:
+                log_perf(
+                    "tts",
+                    "synthesize",
+                    elapsed_ms(start),
+                    device="external",
+                    sessionid=getattr(self.opt, "sessionid", None),
+                    tts_type=getattr(self.opt, "tts", None),
+                    tts_server=getattr(self.opt, "TTS_SERVER", None),
+                    text_len=len(msg),
+                    success=success,
+                )
         logger.info('ttsreal thread stop')
 
     def txt_to_audio(self, msg):

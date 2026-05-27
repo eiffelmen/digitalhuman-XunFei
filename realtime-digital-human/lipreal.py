@@ -24,6 +24,7 @@ from tqdm import tqdm
 from loguru import logger
 from functools import lru_cache
 from collections import OrderedDict
+from perf_logger import elapsed_ms, log_perf, now
 
 import warnings
 
@@ -32,6 +33,26 @@ warnings.filterwarnings("ignore", category=UserWarning)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 logger.info('正在使用{}进行推理。'.format(device))
 torch.backends.cudnn.benchmark = True
+
+
+def _device_name():
+    if device == 'cuda':
+        return torch.cuda.get_device_name(0)
+    return 'cpu'
+
+
+def _cuda_mem_mb():
+    if device != 'cuda':
+        return None
+    return f"{torch.cuda.memory_allocated() / 1024 / 1024:.1f}"
+
+
+def _sync_device():
+    if device == 'cuda':
+        torch.cuda.synchronize()
+
+
+log_perf("wav2lip", "device", device=device, device_name=_device_name())
 
 
 def _load(checkpoint_path):
@@ -44,6 +65,7 @@ def _load(checkpoint_path):
 
 
 def load_model(path):
+    start = now()
     model = Wav2Lip()
     logger.info("从 {} 加载检查点。".format(path))
     checkpoint = _load(path)
@@ -54,7 +76,17 @@ def load_model(path):
     model.load_state_dict(new_s)
 
     model = model.to(device)
-    return model.eval()
+    model = model.eval()
+    _sync_device()
+    log_perf(
+        "wav2lip",
+        "load_model",
+        elapsed_ms(start),
+        device=device,
+        device_name=_device_name(),
+        cuda_mem_mb=_cuda_mem_mb(),
+    )
+    return model
 
 
 def load_avatar(avatar_id):
@@ -95,10 +127,22 @@ def load_avatar(avatar_id):
 
 @torch.no_grad()
 def warm_up(batch_size, model, modelres):
+    start = now()
     logger.info('模型预热中...')
     img_batch = torch.ones(batch_size, 6, modelres, modelres).to(device)
     mel_batch = torch.ones(batch_size, 1, 80, 16).to(device)
     model(mel_batch, img_batch)
+    _sync_device()
+    log_perf(
+        "wav2lip",
+        "warm_up",
+        elapsed_ms(start),
+        device=device,
+        device_name=_device_name(),
+        batch_size=batch_size,
+        modelres=modelres,
+        cuda_mem_mb=_cuda_mem_mb(),
+    )
 
 
 # def read_imgs(img_list, flag=False):
@@ -240,14 +284,32 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                 mel_batch = torch.FloatTensor(
                     np.transpose(mel_batch, (0, 3, 1, 2))).to(device)
 
+                _sync_device()
+                model_start = now()
                 with torch.no_grad():
                     pred = model(mel_batch, img_batch)
+                _sync_device()
+                model_duration_ms = elapsed_ms(model_start)
                 pred = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.
 
                 counttime += (time.perf_counter() - t)
                 count += batch_size
                 if count >= 100: # 恢复日志打印频率
-                    logger.info(f"实际平均推理FPS:{count/counttime:.4f}")
+                    fps = count / counttime
+                    logger.info(f"实际平均推理FPS:{fps:.4f}")
+                    log_perf(
+                        "wav2lip",
+                        "inference",
+                        counttime * 1000,
+                        device=device,
+                        device_name=_device_name(),
+                        frames=count,
+                        batch_size=batch_size,
+                        fps=f"{fps:.4f}",
+                        avg_frame_ms=f"{counttime * 1000 / count:.2f}",
+                        last_model_ms=f"{model_duration_ms:.2f}",
+                        cuda_mem_mb=_cuda_mem_mb(),
+                    )
                     count = 0
                     counttime = 0
 

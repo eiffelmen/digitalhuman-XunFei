@@ -159,6 +159,37 @@ tail -f /opt/digitalhuman/logs/device.log
 docker logs -f frontend
 ```
 
+## 性能耗时日志
+
+后端会打印统一格式的性能日志，关键字为 `[PERF]`，用于查看各模块耗时和 Wav2Lip 使用的设备：
+
+```bash
+tail -f /opt/digitalhuman/logs/realtime.log | grep '\[PERF\]'
+```
+
+也可以查看历史性能日志：
+
+```bash
+grep '\[PERF\]' /opt/digitalhuman/logs/realtime.log
+```
+
+日志字段说明：
+
+- `module=llm action=response_total`：大模型回复总耗时，`device=external` 表示调用外部或本地 LLM 服务接口。
+- `module=tts action=synthesize`：TTS 合成耗时，`device=external` 表示调用 TTS 服务接口。
+- `module=wav2lip action=device/load_model/warm_up/inference`：Wav2Lip 设备、模型加载、预热和推理耗时，`device=cuda` 表示使用 GPU，`device=cpu` 表示使用 CPU。
+- `module=asr action=mel_feature`：数字人口型驱动的音频特征提取耗时，默认每 50 次聚合打印一次。
+- `module=business action=offer/human_validate/chat_dispatch/echo`：会话创建、请求校验、聊天派发、测试回显等其他业务耗时。
+
+可在 `/opt/digitalhuman/be/.env` 中控制性能日志：
+
+```bash
+PERF_LOG_ENABLED=1
+PERF_ASR_EVERY_N=50
+```
+
+`PERF_LOG_ENABLED=0` 可关闭性能日志；`PERF_ASR_EVERY_N=10` 表示音频特征提取每 10 次聚合打印一次。
+
 如需使用已有前端镜像而不是本机构建，可指定：
 
 ```bash
