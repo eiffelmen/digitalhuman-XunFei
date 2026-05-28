@@ -1283,6 +1283,10 @@ class GonganTTS(BaseTTS):
         )
 
 
+class GywtTTS(GonganTTS):
+    """Compatibility alias for server basereal.py versions that import GywtTTS."""
+
+
 class FlashTTS(BaseTTS):
     def __init__(self, opt, parent):
         super().__init__(opt, parent)
