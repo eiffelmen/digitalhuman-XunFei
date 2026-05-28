@@ -15,7 +15,7 @@ import soundfile as sf
 from enum import Enum
 from io import BytesIO
 from loguru import logger
-from typing import Iterator
+from typing import Iterator, Optional
 from threading import Thread, Event, Lock
 from perf_logger import elapsed_ms, log_perf, now
 
@@ -54,9 +54,15 @@ class BaseTTS(object):
         self.msgqueue.queue.clear()
         self.state = State.PAUSE
 
-    def put_msg_txt(self, msg):
+    def put_msg_txt(self, msg, trace_id=None, segment_index=None):
         if len(msg) > 0:
-            self.msgqueue.put(msg)
+            self.msgqueue.put(
+                {
+                    "text": msg,
+                    "trace_id": trace_id,
+                    "segment_index": segment_index,
+                }
+            )
 
     def render(self, quit_event):
         process_thread = Thread(target=self.process_tts, args=(quit_event,))
@@ -65,29 +71,63 @@ class BaseTTS(object):
     def process_tts(self, quit_event):
         while not quit_event.is_set():
             try:
-                msg = self.msgqueue.get(block=True, timeout=1)
+                queue_item = self.msgqueue.get(block=True, timeout=1)
                 self.state = State.RUNNING
             except queue.Empty:
                 continue
+            if isinstance(queue_item, dict):
+                msg = queue_item.get("text", "")
+                trace_id = queue_item.get("trace_id")
+                segment_index = queue_item.get("segment_index")
+            else:
+                msg = queue_item
+                trace_id = None
+                segment_index = None
             start = now()
             success = True
+            if trace_id:
+                log_perf(
+                    "trace",
+                    "tts_start",
+                    trace_id=trace_id,
+                    segment_index=segment_index,
+                    text_len=len(msg),
+                    tts_type=getattr(self.opt, "tts", None),
+                )
+            if hasattr(self.parent, "set_active_tts_trace"):
+                self.parent.set_active_tts_trace(trace_id, segment_index)
             try:
                 self.txt_to_audio(msg)
             except Exception:
                 success = False
                 raise
             finally:
+                duration_ms = elapsed_ms(start)
+                if hasattr(self.parent, "clear_active_tts_trace"):
+                    self.parent.clear_active_tts_trace()
                 log_perf(
                     "tts",
                     "synthesize",
-                    elapsed_ms(start),
+                    duration_ms,
                     device="external",
                     sessionid=getattr(self.opt, "sessionid", None),
                     tts_type=getattr(self.opt, "tts", None),
                     tts_server=getattr(self.opt, "TTS_SERVER", None),
                     text_len=len(msg),
+                    trace_id=trace_id,
+                    segment_index=segment_index,
                     success=success,
                 )
+                if trace_id:
+                    log_perf(
+                        "trace",
+                        "tts_done",
+                        duration_ms,
+                        trace_id=trace_id,
+                        segment_index=segment_index,
+                        text_len=len(msg),
+                        success=success,
+                    )
         logger.info('ttsreal thread stop')
 
     def txt_to_audio(self, msg):
@@ -592,9 +632,13 @@ class IflytekTTS(BaseTTS):
         self._app_id = os.environ["IFLY_APP_ID"]
         self._api_key = os.environ["IFLY_API_KEY"]
         self._api_secret = os.environ.get("IFLYTEK_API_SECRET", os.environ.get("IFLY_API_SECRET", ""))
+        default_vcn = os.environ.get(
+            "IFLY_VCN",
+            getattr(opt, "ifly_vcn", "x2_xiaojuan"),
+        )
         self._vcn = os.environ.get(
-            "IFLYTEK_VCN",
-            os.environ.get("IFLY_VCN", getattr(opt, "ifly_vcn", "x2_xiaojuan")),
+            "IFLYTEK_TTS_VCN",
+            os.environ.get("IFLYTEK_VCN", default_vcn),
         )
         self._fallback_vcn = os.environ.get("IFLYTEK_TTS_FALLBACK_VCN", "xiaoyan")
         self._engine = os.environ.get("IFLYTEK_TTS_ENGINE", "aiui").lower()
@@ -833,7 +877,7 @@ class IflytekTTS(BaseTTS):
             if self.state == State.RUNNING:
                 yield chunk
 
-    def _ifly_tts(self, text: str, vcn: str | None = None) -> Iterator[bytes]:
+    def _ifly_tts(self, text: str, vcn: Optional[str] = None) -> Iterator[bytes]:
         if self._engine == "super":
             received_audio = False
             for chunk in self._super_tts(text):

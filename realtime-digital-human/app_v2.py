@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import inspect
 from typing import Dict
 import uuid
 import asyncio
@@ -372,11 +373,35 @@ def _get_llm_response():
     return llm_response
 
 
-def _timed_llm_response(llm_response, message, nerfreal, sessionid, result_queue):
+def _timed_llm_response(
+    llm_response,
+    message,
+    nerfreal,
+    sessionid,
+    result_queue,
+    trace_id=None,
+):
     provider = os.environ.get("LLM_PROVIDER", "gongan")
     start = now()
     success = True
     try:
+        log_perf(
+            "trace",
+            "llm_start",
+            trace_id=trace_id,
+            provider=provider,
+            sessionid=sessionid,
+            text_len=len(message),
+        )
+        signature = inspect.signature(llm_response)
+        if "trace_id" in signature.parameters:
+            return llm_response(
+                message,
+                nerfreal,
+                sessionid,
+                result_queue,
+                trace_id=trace_id,
+            )
         return llm_response(message, nerfreal, sessionid, result_queue)
     except Exception:
         success = False
@@ -390,6 +415,7 @@ def _timed_llm_response(llm_response, message, nerfreal, sessionid, result_queue
             sessionid=sessionid,
             text_len=len(message),
             device="external",
+            trace_id=trace_id,
             success=success,
         )
 
@@ -415,6 +441,7 @@ async def _llm_response_consumer(state: AppState):
 async def _handle_chat_request(params, sessionid, nerfreal, state: AppState):
     """处理chat请求"""
     start = now()
+    trace_id = params.get("trace_id") or uuid.uuid4().hex[:12]
     llm_response = _get_llm_response()
     # 创建队列用于接收 LLM 响应
     result_queue = asyncio.Queue()
@@ -429,6 +456,7 @@ async def _handle_chat_request(params, sessionid, nerfreal, state: AppState):
         nerfreal,
         sessionid,
         result_queue,
+        trace_id,
     )
 
     response = web.Response(
@@ -441,7 +469,16 @@ async def _handle_chat_request(params, sessionid, nerfreal, state: AppState):
         sessionid=sessionid,
         provider=os.environ.get("LLM_PROVIDER", "gongan"),
         text_len=len(params["text"]),
+        trace_id=trace_id,
         device="cpu",
+    )
+    log_perf(
+        "trace",
+        "chat_dispatched",
+        elapsed_ms(start),
+        trace_id=trace_id,
+        sessionid=sessionid,
+        text_len=len(params["text"]),
     )
     return response
 

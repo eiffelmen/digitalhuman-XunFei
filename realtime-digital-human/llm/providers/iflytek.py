@@ -10,11 +10,13 @@ from datetime import datetime
 from urllib.parse import urlparse, urlencode
 from time import mktime
 from wsgiref.handlers import format_date_time
+from typing import Optional
 
 import websocket
 from loguru import logger
 
 from basereal import BaseReal
+from perf_logger import elapsed_ms, log_perf, now
 
 
 def _find_last_punct(text: str) -> int:
@@ -24,6 +26,118 @@ def _find_last_punct(text: str) -> int:
         if pos > last_punct:
             last_punct = pos
     return last_punct
+
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() not in {"0", "false", "no", "off"}
+
+
+def _env_int(name: str, default: int, min_value: int = 1) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return max(min_value, int(value))
+    except ValueError:
+        logger.warning(f"Invalid {name}={value!r}; using {default}")
+        return default
+
+
+class StreamingTTSDispatcher:
+    sentence_punct = "。！？!?"
+    soft_punct = "，,；;：:、"
+
+    def __init__(self, nerfreal: BaseReal, trace_id: Optional[str]):
+        self.nerfreal = nerfreal
+        self.trace_id = trace_id
+        self.enabled = _env_bool("LLM_STREAM_TTS_ENABLED", True)
+        self.first_chars = _env_int("LLM_STREAM_TTS_FIRST_CHARS", 10)
+        self.min_chars = _env_int("LLM_STREAM_TTS_MIN_CHARS", 10)
+        self.max_chars = _env_int("LLM_STREAM_TTS_MAX_CHARS", 24)
+        self.buffer = ""
+        self.segment_index = 0
+        self.start = now()
+        self.first_dispatched = False
+
+    def append(self, chunk: str):
+        self.buffer += chunk
+        if self.enabled:
+            self._flush_ready(final=False)
+
+    def finish(self):
+        self._flush_ready(final=True)
+
+    def _flush_ready(self, final: bool):
+        while True:
+            segment, reason = self._next_segment(final)
+            if not segment:
+                return
+            self._dispatch(segment, reason)
+            if final:
+                continue
+
+    def _next_segment(self, final: bool):
+        text = self.buffer
+        if not text.strip():
+            self.buffer = ""
+            return None, None
+
+        if final:
+            self.buffer = ""
+            return text, "final"
+
+        split_at = self._find_split(text)
+        if split_at is not None:
+            segment = text[:split_at]
+            self.buffer = text[split_at:]
+            return segment, "punct"
+
+        if not self.first_dispatched and len(text.strip()) >= self.first_chars:
+            segment = text[:self.max_chars]
+            self.buffer = text[self.max_chars:]
+            return segment, "first_fast"
+
+        if len(text.strip()) >= self.max_chars:
+            segment = text[:self.max_chars]
+            self.buffer = text[self.max_chars:]
+            return segment, "max_chars"
+
+        return None, None
+
+    def _find_split(self, text: str):
+        sentence_pos = max([text.rfind(p) for p in self.sentence_punct] or [-1])
+        if sentence_pos != -1 and len(text[: sentence_pos + 1].strip()) >= self.min_chars:
+            return sentence_pos + 1
+
+        soft_pos = max([text.rfind(p) for p in self.soft_punct] or [-1])
+        if soft_pos != -1 and len(text[: soft_pos + 1].strip()) >= self.min_chars:
+            return soft_pos + 1
+
+        return None
+
+    def _dispatch(self, text: str, reason: str):
+        text = text.strip()
+        if not text:
+            return
+        self.segment_index += 1
+        self.first_dispatched = True
+        self.nerfreal.put_msg_txt(
+            text,
+            trace_id=self.trace_id,
+            segment_index=self.segment_index,
+        )
+        log_perf(
+            "trace",
+            "llm_segment_to_tts",
+            elapsed_ms(self.start),
+            trace_id=self.trace_id,
+            segment_index=self.segment_index,
+            reason=reason,
+            text_len=len(text),
+        )
 
 
 def _build_auth_url(base_url: str, api_key: str, api_secret: str) -> str:
@@ -93,9 +207,14 @@ def _build_text_request(
 
 
 def llm_response(
-    message: str, nerfreal: BaseReal, sessionid: str, result_queue: asyncio.Queue
+    message: str,
+    nerfreal: BaseReal,
+    sessionid: str,
+    result_queue: asyncio.Queue,
+    trace_id: Optional[str] = None,
 ) -> str:
     start_time = time.perf_counter()
+    perf_start = now()
     first_token_received = False
     msg_id = str(uuid.uuid4())
 
@@ -113,9 +232,9 @@ def llm_response(
         return None
 
     ws = None
-    buffer = []
     complete_response = []
     seen_nlp_seq = set()
+    tts_dispatcher = StreamingTTSDispatcher(nerfreal, trace_id)
 
     try:
         auth_url = _build_auth_url(ws_url, api_key, api_secret)
@@ -162,28 +281,25 @@ def llm_response(
                             logger.info(
                                 f"讯飞LLM首次响应耗时: {time.perf_counter() - start_time:.2f}s"
                             )
+                            log_perf(
+                                "trace",
+                                "llm_first_token",
+                                elapsed_ms(perf_start),
+                                trace_id=trace_id,
+                                sessionid=sessionid,
+                                chunk_len=len(chunk),
+                            )
 
                         result_queue.put_nowait(
                             {"data": chunk, "id": msg_id, "finish": False}
                         )
                         complete_response.append(chunk)
-                        buffer.append(chunk)
-
-                        if len("".join(buffer)) >= 20:
-                            text = "".join(buffer)
-                            last_punct = _find_last_punct(text)
-                            if last_punct != -1:
-                                output_text = text[: last_punct + 1]
-                                nerfreal.put_msg_txt(output_text)
-                                buffer = [text[last_punct + 1 :]]
+                        tts_dispatcher.append(chunk)
 
             if header.get("status") == 2:
                 break
 
-        if buffer:
-            final_text = "".join(buffer)
-            if final_text.strip():
-                nerfreal.put_msg_txt(final_text)
+        tts_dispatcher.finish()
 
         result_queue.put_nowait({"data": "", "id": msg_id, "finish": True})
         logger.info(f"讯飞LLM总响应耗时: {time.perf_counter() - start_time:.2f}s")

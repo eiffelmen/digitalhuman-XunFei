@@ -99,7 +99,9 @@ IFLYTEK_SCENE=main_box
 IFLYTEK_VCN=x5_lingxiaoyue_flow
 IFLYTEK_TIMEOUT=30
 
-TTS_TYPE=sparktts
+TTS_TYPE=iflytts
+IFLYTEK_TTS_VCN=xiaoyan
+IFLYTEK_TTS_FALLBACK_VCN=xiaoyan
 TTS_SERVER=http://127.0.0.1:8779
 TTS_SERVICE=http://127.0.0.1:8779
 ```
@@ -186,9 +188,15 @@ grep '\[PERF\]' /opt/digitalhuman/logs/realtime.log
 ```bash
 PERF_LOG_ENABLED=1
 PERF_ASR_EVERY_N=50
+LLM_STREAM_TTS_ENABLED=1
+LLM_STREAM_TTS_FIRST_CHARS=10
+LLM_STREAM_TTS_MIN_CHARS=10
+LLM_STREAM_TTS_MAX_CHARS=24
 ```
 
 `PERF_LOG_ENABLED=0` 可关闭性能日志；`PERF_ASR_EVERY_N=10` 表示音频特征提取每 10 次聚合打印一次。
+`LLM_STREAM_TTS_*` 用于控制 LLM 回复分段送入 TTS：首段默认攒到 10 个字即可先播，后续优先按标点切分，最长 24 个字兜底切分。若感觉语音太碎，可适当调大这些值。
+`IFLYTEK_TTS_VCN=xiaoyan` 用于绕开已知容易 500 失败的音色，减少一次失败重试带来的额外等待。
 
 如需使用已有前端镜像而不是本机构建，可指定：
 
