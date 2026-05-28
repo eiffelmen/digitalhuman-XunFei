@@ -6,7 +6,8 @@ from tqdm import tqdm
 from loguru import logger
 from concurrent.futures import ThreadPoolExecutor
 from ttsreal import (EdgeTTS, VoitsTTS, GSVV2TTS,
-                     CosyVoiceTTS, FishTTS, SparkTTS, FlashTTS)
+                     CosyVoiceTTS, FishTTS, SparkTTS, FlashTTS,
+                     IflytekTTS, GonganTTS, GywtTTS)
 
 
 def read_imgs(img_list):
@@ -50,6 +51,12 @@ class BaseReal:
             self.tts = SparkTTS(opt, self)
         elif opt.tts == "flashtts":
             self.tts = FlashTTS(opt,self)
+        elif opt.tts == "iflytts":
+            self.tts = IflytekTTS(opt, self)
+        elif opt.tts == "gongantts":
+            self.tts = GonganTTS(opt, self)
+        elif opt.tts == "gywttts":
+            self.tts = GywtTTS(opt, self)
 
         self.speaking = False
 

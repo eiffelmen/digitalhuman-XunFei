@@ -758,6 +758,9 @@ if __name__ == "__main__":
             "fishtts",
             "sparktts",
             "flashtts",
+            "iflytts",
+            "gongantts",
+            "gywttts",
         ],
         help="语音合成类型",
     )
