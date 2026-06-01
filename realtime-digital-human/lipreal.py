@@ -194,7 +194,7 @@ def __mirror_index(size, index):
 
 @torch.inference_mode()
 def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
-              audio_out_queue, res_frame_queue, model, ready_event):
+              audio_out_queue, res_frame_queue, model, ready_event, reset_event=None):
     try:
         length = len(face_list_cycle)
         index = 0
@@ -223,6 +223,10 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
 
         last_mel_batch = None
         while not quit_event.is_set():
+            if reset_event is not None and reset_event.is_set():
+                last_mel_batch = None
+                reset_event.clear()
+
             if last_mel_batch is None:
                 try:
                     # 恢复超时时间为 0.04s，匹配 Batch 16 的节奏
@@ -338,6 +342,10 @@ class LipReal(BaseReal):
         self.batch_size = opt.batch_size  # 恢复为原始批次大小以提升稳定性
         self.res_frame_queue = queue.Queue(self.batch_size * 2)
         self.model = model
+        self._media_loop = None
+        self._audio_track = None
+        self._video_track = None
+        self.inference_reset_event = Event()
 
         self._init_avatar(avatar)
 
@@ -363,30 +371,74 @@ class LipReal(BaseReal):
             args=(self.inference_quit_event, self.batch_size,
                   self.face_list_cycle, self.asr.feat_queue,
                   self.asr.output_queue, self.res_frame_queue, self.model,
-                  self.inference_ready))
+                  self.inference_ready, self.inference_reset_event))
         self.inference_thread.start()
         self.inference_ready.wait(timeout=5.0)  # 添加超时以防止死锁
 
-    def _clear_frame_queue(self):
-        while not self.res_frame_queue.empty():
+    def _drain_queue(self, target_queue):
+        cleared = 0
+        while True:
             try:
-                self.res_frame_queue.get_nowait()
-            except queue.Empty:
+                target_queue.get_nowait()
+                cleared += 1
+            except Exception:
                 break
+        return cleared
+
+    def _clear_frame_queue(self):
+        return self._drain_queue(self.res_frame_queue)
 
     def _clear_audio_queues(self):
         # 清理ASR相关的队列
+        input_size = self.asr.queue.qsize()
         self.asr.queue.queue.clear()
-        while not self.asr.output_queue.empty():
+        output_size = self._drain_queue(self.asr.output_queue)
+        feat_size = self._drain_queue(self.asr.feat_queue)
+        return input_size, output_size, feat_size
+
+    def _clear_media_track_queues(self):
+        if self._audio_track is None and self._video_track is None:
+            return 0, 0
+
+        done = Event()
+        cleared = {"audio": 0, "video": 0}
+
+        def clear_track_queues():
+            for name, track in (("audio", self._audio_track), ("video", self._video_track)):
+                q = getattr(track, "_queue", None)
+                if q is None:
+                    continue
+                try:
+                    cleared[name] = q.qsize()
+                    q._queue.clear()
+                except Exception:
+                    cleared[name] = 0
+            done.set()
+
+        if self._media_loop is not None:
             try:
-                self.asr.output_queue.get_nowait()
-            except:
-                break
-        while not self.asr.feat_queue.empty():
-            try:
-                self.asr.feat_queue.get_nowait()
-            except:
-                break
+                self._media_loop.call_soon_threadsafe(clear_track_queues)
+                done.wait(timeout=0.3)
+            except Exception:
+                clear_track_queues()
+        else:
+            clear_track_queues()
+
+        return cleared["audio"], cleared["video"]
+
+    def flush_talk(self):
+        self.tts.flush_talk()
+        input_size, output_size, feat_size = self._clear_audio_queues()
+        frame_size = self._clear_frame_queue()
+        audio_track_size, video_track_size = self._clear_media_track_queues()
+        self.inference_reset_event.set()
+        self.speaking = False
+        logger.info(
+            "interrupt flush: cleared queues "
+            f"asr_input={input_size}, asr_output={output_size}, "
+            f"asr_feat={feat_size}, wav2lip_frames={frame_size}, "
+            f"webrtc_audio={audio_track_size}, webrtc_video={video_track_size}"
+        )
 
     def __del__(self):
         logger.info(f'lipreal() delete')
@@ -428,6 +480,10 @@ class LipReal(BaseReal):
                        loop=None,
                        audio_track=None,
                        video_track=None):
+        self._media_loop = loop
+        self._audio_track = audio_track
+        self._video_track = video_track
+
         while not quit_event.is_set():
             # 流量控制：增加缓冲区深度到 10 帧 (400ms)，提高对瞬间波动的耐受性
             if audio_track._queue.qsize() > 15 or video_track._queue.qsize() > 10:
