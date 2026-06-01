@@ -63,11 +63,17 @@ class StreamingTTSDispatcher:
         self.first_dispatched = False
 
     def append(self, chunk: str):
+        if self._is_stale():
+            self.buffer = ""
+            return
         self.buffer += chunk
         if self.enabled:
             self._flush_ready(final=False)
 
     def finish(self):
+        if self._is_stale():
+            self.buffer = ""
+            return
         self._flush_ready(final=True)
 
     def _flush_ready(self, final: bool):
@@ -122,6 +128,12 @@ class StreamingTTSDispatcher:
         text = text.strip()
         if not text:
             return
+        if self._is_stale():
+            logger.info(
+                f"Skip stale LLM-to-TTS segment trace_id={self.trace_id}, "
+                f"reason={reason}, text_len={len(text)}"
+            )
+            return
         self.segment_index += 1
         self.first_dispatched = True
         self.nerfreal.put_msg_txt(
@@ -138,6 +150,10 @@ class StreamingTTSDispatcher:
             reason=reason,
             text_len=len(text),
         )
+
+    def _is_stale(self) -> bool:
+        is_active = getattr(self.nerfreal, "is_active_chat_trace", None)
+        return bool(self.trace_id and callable(is_active) and not is_active(self.trace_id))
 
 
 def _build_auth_url(base_url: str, api_key: str, api_secret: str) -> str:
@@ -216,7 +232,7 @@ def llm_response(
     start_time = time.perf_counter()
     perf_start = now()
     first_token_received = False
-    msg_id = str(uuid.uuid4())
+    msg_id = trace_id or str(uuid.uuid4())
 
     ws_url = os.environ.get("IFLYTEK_WS_URL", "wss://aiui.xf-yun.com/v3/aiint/sos")
     appid = os.environ.get("IFLYTEK_APPID", "")
@@ -249,9 +265,19 @@ def llm_response(
         logger.info("开始接收讯飞AIUI流式响应")
 
         while True:
+            is_active = getattr(nerfreal, "is_active_chat_trace", None)
+            if trace_id and callable(is_active) and not is_active(trace_id):
+                logger.info(f"停止处理已失效的讯飞LLM响应 trace_id={trace_id}")
+                return None
+
             raw = ws.recv()
             if not raw:
                 continue
+
+            is_active = getattr(nerfreal, "is_active_chat_trace", None)
+            if trace_id and callable(is_active) and not is_active(trace_id):
+                logger.info(f"丢弃已失效的讯飞LLM响应包 trace_id={trace_id}")
+                return None
 
             data = json.loads(raw)
             header = data.get("header", {})
@@ -276,6 +302,11 @@ def llm_response(
                     nlp_text = base64.b64decode(text_bs64).decode("utf-8")
                     chunk = nlp_text.translate(str.maketrans("", "", "*#-"))
                     if chunk:
+                        is_active = getattr(nerfreal, "is_active_chat_trace", None)
+                        if trace_id and callable(is_active) and not is_active(trace_id):
+                            logger.info(f"丢弃已失效的讯飞LLM文本片段 trace_id={trace_id}")
+                            return None
+
                         if not first_token_received:
                             first_token_received = True
                             logger.info(

@@ -266,6 +266,8 @@ async def interrupt(request):
     nerfreal = state.nerfreals[sessionid]
     if nerfreal is None:
         return web.json_response({"code": 400, "message": "数字人实例尚未初始化"}, status=400)
+    if hasattr(nerfreal, "set_active_chat_trace"):
+        nerfreal.set_active_chat_trace(None)
     nerfreal.flush_talk()
 
     return web.Response(
@@ -442,6 +444,8 @@ async def _handle_chat_request(params, sessionid, nerfreal, state: AppState):
     """处理chat请求"""
     start = now()
     trace_id = params.get("trace_id") or uuid.uuid4().hex[:12]
+    if hasattr(nerfreal, "set_active_chat_trace"):
+        nerfreal.set_active_chat_trace(trace_id)
     llm_response = _get_llm_response()
     # 创建队列用于接收 LLM 响应
     result_queue = asyncio.Queue()

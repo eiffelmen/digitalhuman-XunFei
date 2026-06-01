@@ -83,6 +83,16 @@ class BaseTTS(object):
                 msg = queue_item
                 trace_id = None
                 segment_index = None
+            if (
+                trace_id
+                and hasattr(self.parent, "is_active_chat_trace")
+                and not self.parent.is_active_chat_trace(trace_id)
+            ):
+                logger.info(
+                    f"Skip stale TTS segment trace_id={trace_id}, "
+                    f"segment_index={segment_index}, text_len={len(msg)}"
+                )
+                continue
             start = now()
             success = True
             if trace_id:

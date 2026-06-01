@@ -65,6 +65,7 @@ class BaseReal:
         self._active_tts_trace_id = None
         self._active_tts_segment_index = None
         self._active_tts_first_audio_frame_logged = False
+        self._active_chat_trace_id = None
         self.custom_img_cycle = {}
         self.custom_audio_cycle = {}
         self.custom_audio_index = {}
@@ -81,6 +82,14 @@ class BaseReal:
 
     def put_msg_txt(self, msg, trace_id=None, segment_index=None):
         self.tts.put_msg_txt(msg, trace_id=trace_id, segment_index=segment_index)
+
+    def set_active_chat_trace(self, trace_id=None):
+        self._active_chat_trace_id = trace_id
+
+    def is_active_chat_trace(self, trace_id=None):
+        if not trace_id:
+            return True
+        return self._active_chat_trace_id == trace_id
 
     def set_active_tts_trace(self, trace_id=None, segment_index=None):
         self._active_tts_trace_id = trace_id

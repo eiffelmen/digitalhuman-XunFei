@@ -485,8 +485,8 @@ class LipReal(BaseReal):
         self._video_track = video_track
 
         while not quit_event.is_set():
-            # 流量控制：增加缓冲区深度到 10 帧 (400ms)，提高对瞬间波动的耐受性
-            if audio_track._queue.qsize() > 15 or video_track._queue.qsize() > 10:
+            # 视频队列是最终画面帧率的关键，避免音频短时缓冲把视频生产一起卡住。
+            if video_track._queue.qsize() > 10:
                 time.sleep(0.01)
                 continue
 
