@@ -5,7 +5,7 @@ import VideoDiv from '@/components/VideoDiv.vue';
 import { store } from '@/store/store';
 import { getPublicUrl } from '@/utils/getAssets';
 import { getStore, setStore } from '@/utils/store';
-import {nextTick, onMounted, onUnmounted, reactive, ref} from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { eventBus } from '@/api/session';
 import ChatLog from '@/components/ChatLog.vue';
 import ChatQuestion from '@/components/ChatQuestion.vue';
@@ -14,12 +14,23 @@ import { digitalHumanSay } from '@/api';
 import { buildWsUrl, buildApiUrl } from '@/config';
 import { WebSocketManager } from '@/utils/websocket';
 
-// 使用 buildApiUrl 构建完整的 API URL(Electron 环境下)
-const adVideoSrc = buildApiUrl('main', '/static/反诈视频.mp4');
+const ANTI_FRAUD_VIDEO_PATH = '/static/反诈视频.mp4';
+const buildDirectUrl = (port, path) => {
+	const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+	const hostname = window.location.hostname || '127.0.0.1';
+	return `${protocol}//${hostname}:${port}${path}`;
+};
+const adVideoSources = [
+	buildApiUrl('main', ANTI_FRAUD_VIDEO_PATH),
+	buildDirectUrl(8000, ANTI_FRAUD_VIDEO_PATH),
+];
+const adVideoIndex = ref(0);
+const adVideoSrc = computed(() => adVideoSources[adVideoIndex.value]);
 const sessionId = ref('');
 const showDetail = ref(false);
 const showDiv = ref(false);
 const videoDivRef = ref(null);
+const adVideoRef = ref(null);
 const loading = ref(false);
 const chatRef = ref(null);
 const chatQuestionRef = ref(null);
@@ -168,6 +179,7 @@ function handleFirstUserGesture() {
 		hasUserGesture = true;
 		initAudioContext();
 	}
+	playAdVideo();
 }
 function initAudioContext() {
 	if (hasUserGesture) {
@@ -198,7 +210,35 @@ function handleUserPress() {
 	const adVideoElem = document.getElementById('ad-video');
 	if (adVideoElem) {
 		adVideoElem.muted = false;
+		adVideoElem.play?.().catch(error => {
+			console.warn('用户点击后播放反诈视频失败:', error);
+		});
 	}
+}
+
+function playAdVideo() {
+	const video = adVideoRef.value || document.getElementById('ad-video');
+	if (!video) {
+		return;
+	}
+
+	video.muted = true;
+	video.playsInline = true;
+	const playPromise = video.play?.();
+	if (playPromise && typeof playPromise.catch === 'function') {
+		playPromise.catch(error => {
+			console.warn('反诈视频自动播放失败，等待用户手势或切换备用地址:', error);
+		});
+	}
+}
+
+function handleAdVideoError() {
+	if (adVideoIndex.value < adVideoSources.length - 1) {
+		adVideoIndex.value += 1;
+		nextTick(playAdVideo);
+		return;
+	}
+	console.error('反诈视频加载失败，已尝试所有地址:', adVideoSources);
 }
 function toggleFullScreen() {
 	if (!document.fullscreenElement) {
@@ -379,6 +419,7 @@ onMounted(async () => {
 	}
 
 	await nextTick();
+	playAdVideo();
 	initChatQuestionWebSocket();
 	handleInitSocket();
 	handleReportDeviceId();
@@ -386,6 +427,13 @@ onMounted(async () => {
 
 	// notifyAndroidReadyToRecv();
 	
+});
+
+watch(showStandby, async value => {
+	if (value) {
+		await nextTick();
+		playAdVideo();
+	}
 });
 
 onUnmounted(() => {
@@ -492,7 +540,22 @@ onUnmounted(() => {
 					class="camera-image"
 				/> -->
 				<!-- todo: http://your-server-host:8000/static/反诈视频.mp4 -->
-				<video id="ad-video" class="camera-image" :src="adVideoSrc" autoplay loop></video>
+				<video
+					ref="adVideoRef"
+					id="ad-video"
+					class="camera-image"
+					:src="adVideoSrc"
+					autoplay
+					muted
+					loop
+					playsinline
+					webkit-playsinline
+					preload="auto"
+					poster="/video_bg2.jpg"
+					@error="handleAdVideoError"
+					@loadeddata="playAdVideo"
+					@canplay="playAdVideo"
+				></video>
 			</div>
 		</div>
 		
@@ -554,6 +617,8 @@ onUnmounted(() => {
 			height: 100%;
 			margin: 0;
 			padding: 0;
+			object-fit: cover;
+			background: #0a4aa0;
 		}
 	}
 }

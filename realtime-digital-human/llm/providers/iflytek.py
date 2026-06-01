@@ -251,6 +251,7 @@ def llm_response(
     complete_response = []
     seen_nlp_seq = set()
     tts_dispatcher = StreamingTTSDispatcher(nerfreal, trace_id)
+    stream_frontend_text = _env_bool("LLM_FRONTEND_STREAM_TEXT_ENABLED", False)
 
     try:
         auth_url = _build_auth_url(ws_url, api_key, api_secret)
@@ -321,20 +322,34 @@ def llm_response(
                                 chunk_len=len(chunk),
                             )
 
-                        result_queue.put_nowait(
-                            {"data": chunk, "id": msg_id, "finish": False}
-                        )
                         complete_response.append(chunk)
+                        if stream_frontend_text:
+                            result_queue.put_nowait(
+                                {"data": chunk, "id": msg_id, "finish": False}
+                            )
                         tts_dispatcher.append(chunk)
 
             if header.get("status") == 2:
                 break
 
         tts_dispatcher.finish()
-
+        final_text = "".join(complete_response)
+        if final_text and not stream_frontend_text:
+            result_queue.put_nowait(
+                {"data": final_text, "id": msg_id, "finish": False}
+            )
         result_queue.put_nowait({"data": "", "id": msg_id, "finish": True})
         logger.info(f"讯飞LLM总响应耗时: {time.perf_counter() - start_time:.2f}s")
-        return "".join(complete_response)
+        log_perf(
+            "trace",
+            "llm_final_text_to_frontend",
+            elapsed_ms(perf_start),
+            trace_id=trace_id,
+            sessionid=sessionid,
+            text_len=len(final_text),
+            stream=stream_frontend_text,
+        )
+        return final_text
 
     except Exception as e:
         logger.error(f"讯飞LLM处理异常: {str(e)}")
