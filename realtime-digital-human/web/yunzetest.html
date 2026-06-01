@@ -395,22 +395,33 @@
             }
         }
 
-        // 测试唤醒WebSocket接口
-        function testWakeupWebSocket(sessionid) {
-            const statusMessage = document.getElementById('status-message');
-            // const wsUrl = "ws://your-server-host:8000/ws?type=app&id=1";
-            const wsUrl = window.location.origin.replace(/^http/, 'ws').replace(/:[0-9]+$/, ':8000') + '/ws?type=app&id=1';
-            // const wsUrl = window.location.origin.replace(/:[0-9]+$/, ':8010');
+        function buildWakeupWebSocketUrls(appClientId) {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const hostname = window.location.hostname || '127.0.0.1';
+            const encodedClientId = encodeURIComponent(appClientId);
+            const urls = [
+                // 生产前端通过 nginx 把 /ws 转发到 device 服务。
+                `${protocol}//${hostname}/ws?type=app&id=${encodedClientId}`,
+                // 调试页直接打开 8010 时，兜底直连 device 服务默认端口。
+                `${protocol}//${hostname}:8000/ws?type=app&id=${encodedClientId}`,
+            ];
 
-            statusMessage.innerHTML = `<div class="loading">正在连接WebSocket并发送唤醒消息...</div>`;
+            return [...new Set(urls)];
+        }
 
-            try {
-                // 创建WebSocket连接
+        function sendWakeupMessage(wsUrl, sessionid) {
+            return new Promise((resolve, reject) => {
+                let settled = false;
                 const ws = new WebSocket(wsUrl);
-                console.log(ws);
+                const timeout = setTimeout(() => {
+                    if (!settled) {
+                        settled = true;
+                        ws.close();
+                        reject(new Error('连接超时'));
+                    }
+                }, 5000);
 
-                ws.onopen = function(event) {
-                    // 连接成功后发送唤醒消息
+                ws.onopen = function() {
                     const wakeupMessage = {
                         type: "msg2web",
                         deviceid: sessionid,
@@ -418,36 +429,51 @@
                     };
 
                     ws.send(JSON.stringify(wakeupMessage));
-                    statusMessage.innerHTML = `<div class="success">WebSocket连接成功！已发送唤醒消息，会话ID: ${sessionid}</div>`;
-
-                    // 发送消息后关闭连接
-                    setTimeout(() => {
-                        ws.close();
-                    }, 1000);
+                    settled = true;
+                    clearTimeout(timeout);
+                    setTimeout(() => ws.close(1000, 'done'), 200);
+                    resolve(wsUrl);
                 };
 
-                ws.onerror = function(error) {
-                    statusMessage.innerHTML = `<div class="error">WebSocket连接失败: ${error.message || '未知错误'}</div>`;
+                ws.onerror = function() {
+                    if (!settled) {
+                        settled = true;
+                        clearTimeout(timeout);
+                        reject(new Error('连接失败'));
+                    }
                 };
 
                 ws.onclose = function(event) {
-                    // 连接关闭时的处理
-                    if (event.code !== 1000) {
-                        statusMessage.innerHTML = `<div class="error">WebSocket连接异常关闭: ${event.reason || '未知原因'}</div>`;
+                    if (!settled) {
+                        settled = true;
+                        clearTimeout(timeout);
+                        reject(new Error(event.reason || `连接关闭 code=${event.code}`));
                     }
                 };
+            });
+        }
 
-                // 设置连接超时
-                setTimeout(() => {
-                    if (ws.readyState === WebSocket.CONNECTING) {
-                        ws.close();
-                        statusMessage.innerHTML = `<div class="error">WebSocket连接超时</div>`;
-                    }
-                }, 5000);
+        // 测试唤醒WebSocket接口
+        async function testWakeupWebSocket(sessionid) {
+            const statusMessage = document.getElementById('status-message');
+            const appClientId = `yunzetest-${Date.now()}`;
+            const wsUrls = buildWakeupWebSocketUrls(appClientId);
+            const errors = [];
 
-            } catch (error) {
-                statusMessage.innerHTML = `<div class="error">WebSocket连接异常: ${error.message}</div>`;
+            statusMessage.innerHTML = `<div class="loading">正在连接WebSocket并发送唤醒消息...</div>`;
+
+            for (const wsUrl of wsUrls) {
+                try {
+                    statusMessage.innerHTML = `<div class="loading">正在尝试唤醒通道: ${wsUrl}</div>`;
+                    const usedUrl = await sendWakeupMessage(wsUrl, sessionid);
+                    statusMessage.innerHTML = `<div class="success">唤醒消息已发送！会话ID: ${sessionid}<br>通道: ${usedUrl}</div>`;
+                    return;
+                } catch (error) {
+                    errors.push(`${wsUrl}: ${error.message}`);
+                }
             }
+
+            statusMessage.innerHTML = `<div class="error">唤醒消息发送失败，请确认 device 服务或 nginx /ws 代理正常。<br>${errors.join('<br>')}</div>`;
         }
 
         // 自动刷新会话列表（每30秒）

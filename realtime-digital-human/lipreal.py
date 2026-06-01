@@ -337,7 +337,17 @@ class LipReal(BaseReal):
     def __init__(self, opt, model, avatar):
         super().__init__(opt)
         self.fps = opt.fps
-        self.bg_img = cv2.imread(opt.bg_img)  # 背景图
+        self.bg_img_path = opt.bg_img
+        self.bg_fallback_bgr = self._parse_bgr_env(
+            os.getenv("WEBRTC_BG_FALLBACK_BGR"),
+            (160, 68, 10),
+        )
+        self.bg_img = cv2.imread(self.bg_img_path) if self.bg_img_path else None
+        if self.bg_img is None:
+            logger.warning(
+                f"背景图读取失败: {self.bg_img_path}, "
+                f"将使用兜底背景 BGR={self.bg_fallback_bgr}"
+            )
 
         self.batch_size = opt.batch_size  # 恢复为原始批次大小以提升稳定性
         self.res_frame_queue = queue.Queue(self.batch_size * 2)
@@ -383,7 +393,13 @@ class LipReal(BaseReal):
 
     def update_bg_img(self, bg_img_path):
         logger.info(f'更新背景图片到: {bg_img_path}')
+        self.bg_img_path = bg_img_path
         self.bg_img = cv2.imread(bg_img_path)
+        if self.bg_img is None:
+            logger.warning(
+                f"背景图读取失败: {bg_img_path}, "
+                f"将使用兜底背景 BGR={self.bg_fallback_bgr}"
+            )
         self._configure_render_assets(reset_cache=False)
 
     def _init_avatar(self, avatar):
@@ -529,6 +545,25 @@ class LipReal(BaseReal):
         resized = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
         return resized, w, h, target_w, target_h, scale
 
+    def _parse_bgr_env(self, raw_value, default):
+        if not raw_value:
+            return default
+
+        try:
+            values = [int(part.strip()) for part in raw_value.split(",")]
+            if len(values) != 3:
+                raise ValueError("expected 3 comma separated values")
+            return tuple(max(0, min(255, value)) for value in values)
+        except Exception:
+            logger.warning(
+                f"WEBRTC_BG_FALLBACK_BGR={raw_value} 格式无效，"
+                f"使用默认值 {default}"
+            )
+            return default
+
+    def _fallback_background(self, width, height):
+        return np.full((height, width, 3), self.bg_fallback_bgr, dtype=np.uint8)
+
     def _configure_render_assets(self, reset_cache=False):
         if not hasattr(self, "frame_list_cycle") or not self.frame_list_cycle:
             return
@@ -541,7 +576,7 @@ class LipReal(BaseReal):
 
         bg_img = self.bg_img
         if bg_img is None:
-            bg_img = np.zeros((src_h, src_w, 3), dtype=np.uint8)
+            bg_img = self._fallback_background(src_w, src_h)
         if bg_img.shape[1] != out_w or bg_img.shape[0] != out_h:
             bg_img = cv2.resize(bg_img, (out_w, out_h), interpolation=cv2.INTER_AREA)
         self._render_bg_img = bg_img
