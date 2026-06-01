@@ -346,6 +346,18 @@ class LipReal(BaseReal):
         self._audio_track = None
         self._video_track = None
         self.inference_reset_event = Event()
+        self._idle_frame_index = 0
+        self.video_queue_max = int(os.getenv("WEBRTC_VIDEO_QUEUE_MAX", "3") or 3)
+        self.video_max_width = int(os.getenv("WEBRTC_VIDEO_MAX_WIDTH", "540") or 0)
+        self.video_max_height = int(os.getenv("WEBRTC_VIDEO_MAX_HEIGHT", "960") or 0)
+        self.video_scale = float(os.getenv("WEBRTC_VIDEO_SCALE", "1.0") or 1.0)
+        logger.info(
+            "WebRTC output config: "
+            f"queue_max={self.video_queue_max}, "
+            f"max_width={self.video_max_width}, "
+            f"max_height={self.video_max_height}, "
+            f"scale={self.video_scale}"
+        )
 
         self._init_avatar(avatar)
 
@@ -475,6 +487,42 @@ class LipReal(BaseReal):
                     background_image.astype(np.float32) * (1.0 - mask))
         return combined.astype(np.uint8)
 
+    def _resize_output_frame(self, frame):
+        h, w = frame.shape[:2]
+        scale = self.video_scale if self.video_scale > 0 else 1.0
+        scale = min(scale, 1.0)
+
+        if self.video_max_width > 0 and w * scale > self.video_max_width:
+            scale = min(scale, self.video_max_width / w)
+        if self.video_max_height > 0 and h * scale > self.video_max_height:
+            scale = min(scale, self.video_max_height / h)
+
+        if scale >= 0.999:
+            return frame, w, h, w, h, 1.0
+
+        target_w = max(2, int(w * scale))
+        target_h = max(2, int(h * scale))
+        # 偶数尺寸对 H264/VP8 编码更友好。
+        target_w -= target_w % 2
+        target_h -= target_h % 2
+        resized = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+        return resized, w, h, target_w, target_h, scale
+
+    def _put_track_frame(self, track, frame, loop):
+        if track is None or loop is None:
+            return
+
+        def put_frame():
+            try:
+                track._queue.put_nowait(frame)
+            except Exception as exc:
+                logger.debug(f"WebRTC queue put skipped: {exc}")
+
+        try:
+            loop.call_soon_threadsafe(put_frame)
+        except Exception as exc:
+            logger.debug(f"WebRTC loop put skipped: {exc}")
+
     def process_frames(self,
                        quit_event,
                        loop=None,
@@ -483,18 +531,25 @@ class LipReal(BaseReal):
         self._media_loop = loop
         self._audio_track = audio_track
         self._video_track = video_track
+        render_start = now()
+        render_count = 0
+        render_speaking_count = 0
+        render_idle_count = 0
 
         while not quit_event.is_set():
             # 视频队列是最终画面帧率的关键，避免音频短时缓冲把视频生产一起卡住。
-            if video_track._queue.qsize() > 10:
-                time.sleep(0.01)
+            if video_track is not None and video_track._queue.qsize() > self.video_queue_max:
+                time.sleep(0.005)
                 continue
 
             try:
                 res_frame, idx, audio_frames = self.res_frame_queue.get(
-                    block=True, timeout=1)
+                    block=True, timeout=0.04)
             except queue.Empty:
-                continue
+                idx = self.mirror_index(len(self.frame_list_cycle), self._idle_frame_index)
+                self._idle_frame_index += 1
+                res_frame = None
+                audio_frames = None
 
             # 连续两帧均为静音数据，或者没有音频数据（处于等待状态）
             if audio_frames is None or (audio_frames[0][1] != 0 and audio_frames[1][1] != 0):
@@ -539,8 +594,7 @@ class LipReal(BaseReal):
                                            samples=frame.shape[0])
                     new_frame.planes[0].update(frame.tobytes())
                     new_frame.sample_rate = 16000
-                    asyncio.run_coroutine_threadsafe(
-                        audio_track._queue.put(new_frame), loop)
+                    self._put_track_frame(audio_track, new_frame, loop)
             else:
                 # 维持 40ms 的静音（20ms * 2）以匹配 25fps 的视频节奏
                 silence_frame = np.zeros(self.chunk, dtype=np.int16)
@@ -548,12 +602,38 @@ class LipReal(BaseReal):
                     new_frame = AudioFrame(format='s16', layout='mono', samples=self.chunk)
                     new_frame.planes[0].update(silence_frame.tobytes())
                     new_frame.sample_rate = 16000
-                    asyncio.run_coroutine_threadsafe(audio_track._queue.put(new_frame), loop)
+                    self._put_track_frame(audio_track, new_frame, loop)
 
             # 音频包推送后再进行耗时的视频转换，确保声音优先
+            combine_frame, src_w, src_h, out_w, out_h, out_scale = self._resize_output_frame(combine_frame)
             new_frame = VideoFrame.from_ndarray(combine_frame, format="bgr24")
-            asyncio.run_coroutine_threadsafe(video_track._queue.put(new_frame),
-                                             loop)
+            self._put_track_frame(video_track, new_frame, loop)
+
+            render_count += 1
+            if self.speaking:
+                render_speaking_count += 1
+            else:
+                render_idle_count += 1
+            if render_count >= 100:
+                render_ms = elapsed_ms(render_start)
+                log_perf(
+                    "webrtc",
+                    "render_frames",
+                    render_ms,
+                    device="cpu",
+                    fps=f"{render_count / max(render_ms / 1000, 0.001):.2f}",
+                    source_size=f"{src_w}x{src_h}",
+                    output_size=f"{out_w}x{out_h}",
+                    output_scale=f"{out_scale:.3f}",
+                    video_queue=video_track._queue.qsize() if video_track is not None else -1,
+                    audio_queue=audio_track._queue.qsize() if audio_track is not None else -1,
+                    speaking_frames=render_speaking_count,
+                    idle_frames=render_idle_count,
+                )
+                render_start = now()
+                render_count = 0
+                render_speaking_count = 0
+                render_idle_count = 0
 
         logger.info('Wav2Lip 处理帧线程停止...')
 
