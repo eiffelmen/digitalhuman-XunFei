@@ -351,12 +351,25 @@ class LipReal(BaseReal):
         self.video_max_width = int(os.getenv("WEBRTC_VIDEO_MAX_WIDTH", "540") or 0)
         self.video_max_height = int(os.getenv("WEBRTC_VIDEO_MAX_HEIGHT", "960") or 0)
         self.video_scale = float(os.getenv("WEBRTC_VIDEO_SCALE", "1.0") or 1.0)
+        self.render_cache_size = int(os.getenv("WEBRTC_RENDER_CACHE_SIZE", "1024") or 0)
+        self.render_preload = os.getenv("WEBRTC_RENDER_PRELOAD", "1").lower() not in {
+            "0",
+            "false",
+            "no",
+        }
+        self._render_cache = OrderedDict()
+        self._render_src_size = (0, 0)
+        self._render_output_size = (0, 0)
+        self._render_output_scale = 1.0
+        self._render_bg_img = None
         logger.info(
             "WebRTC output config: "
             f"queue_max={self.video_queue_max}, "
             f"max_width={self.video_max_width}, "
             f"max_height={self.video_max_height}, "
-            f"scale={self.video_scale}"
+            f"scale={self.video_scale}, "
+            f"render_cache_size={self.render_cache_size}, "
+            f"render_preload={self.render_preload}"
         )
 
         self._init_avatar(avatar)
@@ -371,9 +384,11 @@ class LipReal(BaseReal):
     def update_bg_img(self, bg_img_path):
         logger.info(f'更新背景图片到: {bg_img_path}')
         self.bg_img = cv2.imread(bg_img_path)
+        self._configure_render_assets(reset_cache=False)
 
     def _init_avatar(self, avatar):
         self.frame_list_cycle, self.face_list_cycle, self.coord_list_cycle, self.mask_list_cycle = avatar
+        self._configure_render_assets(reset_cache=True)
 
     def _init_inference_thread(self):
         self.inference_quit_event = Event()
@@ -487,8 +502,7 @@ class LipReal(BaseReal):
                     background_image.astype(np.float32) * (1.0 - mask))
         return combined.astype(np.uint8)
 
-    def _resize_output_frame(self, frame):
-        h, w = frame.shape[:2]
+    def _target_output_size(self, w, h):
         scale = self.video_scale if self.video_scale > 0 else 1.0
         scale = min(scale, 1.0)
 
@@ -498,15 +512,107 @@ class LipReal(BaseReal):
             scale = min(scale, self.video_max_height / h)
 
         if scale >= 0.999:
-            return frame, w, h, w, h, 1.0
+            return w, h, 1.0
 
         target_w = max(2, int(w * scale))
         target_h = max(2, int(h * scale))
         # 偶数尺寸对 H264/VP8 编码更友好。
         target_w -= target_w % 2
         target_h -= target_h % 2
+        return target_w, target_h, scale
+
+    def _resize_output_frame(self, frame):
+        h, w = frame.shape[:2]
+        target_w, target_h, scale = self._target_output_size(w, h)
+        if scale >= 0.999:
+            return frame, w, h, w, h, 1.0
         resized = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
         return resized, w, h, target_w, target_h, scale
+
+    def _configure_render_assets(self, reset_cache=False):
+        if not hasattr(self, "frame_list_cycle") or not self.frame_list_cycle:
+            return
+
+        src_h, src_w = self.frame_list_cycle[0].shape[:2]
+        out_w, out_h, out_scale = self._target_output_size(src_w, src_h)
+        self._render_src_size = (src_w, src_h)
+        self._render_output_size = (out_w, out_h)
+        self._render_output_scale = out_scale
+
+        bg_img = self.bg_img
+        if bg_img is None:
+            bg_img = np.zeros((src_h, src_w, 3), dtype=np.uint8)
+        if bg_img.shape[1] != out_w or bg_img.shape[0] != out_h:
+            bg_img = cv2.resize(bg_img, (out_w, out_h), interpolation=cv2.INTER_AREA)
+        self._render_bg_img = bg_img
+
+        if reset_cache:
+            self._render_cache.clear()
+
+        logger.info(
+            "WebRTC render assets: "
+            f"source={src_w}x{src_h}, output={out_w}x{out_h}, "
+            f"scale={out_scale:.3f}, cache_size={self.render_cache_size}"
+        )
+
+        if reset_cache and self.render_preload and out_scale < 0.999 and self.render_cache_size > 0:
+            preload_start = now()
+            preload_count = min(len(self.frame_list_cycle), self.render_cache_size)
+            for idx in range(preload_count):
+                self._get_render_assets(idx)
+            log_perf(
+                "webrtc",
+                "preload_render_assets",
+                elapsed_ms(preload_start),
+                device="cpu",
+                frames=preload_count,
+                source_size=f"{src_w}x{src_h}",
+                output_size=f"{out_w}x{out_h}",
+                output_scale=f"{out_scale:.3f}",
+                cached=len(self._render_cache),
+            )
+
+    def _scale_bbox(self, bbox):
+        src_w, src_h = self._render_src_size
+        out_w, out_h = self._render_output_size
+        y1, y2, x1, x2 = bbox
+        scale_x = out_w / src_w if src_w else 1.0
+        scale_y = out_h / src_h if src_h else 1.0
+        y1 = max(0, min(out_h, int(round(y1 * scale_y))))
+        y2 = max(y1 + 1, min(out_h, int(round(y2 * scale_y))))
+        x1 = max(0, min(out_w, int(round(x1 * scale_x))))
+        x2 = max(x1 + 1, min(out_w, int(round(x2 * scale_x))))
+        return y1, y2, x1, x2
+
+    def _get_render_assets(self, idx):
+        src_w, src_h = self._render_src_size
+        out_w, out_h = self._render_output_size
+        out_scale = self._render_output_scale
+        if out_scale >= 0.999:
+            return (
+                self.frame_list_cycle[idx],
+                self.mask_list_cycle[idx],
+                self.coord_list_cycle[idx],
+                src_w,
+                src_h,
+                out_w,
+                out_h,
+                out_scale,
+            )
+
+        cached = self._render_cache.get(idx)
+        if cached is not None:
+            self._render_cache.move_to_end(idx)
+            return (*cached, src_w, src_h, out_w, out_h, out_scale)
+
+        frame = cv2.resize(self.frame_list_cycle[idx], (out_w, out_h), interpolation=cv2.INTER_AREA)
+        mask = cv2.resize(self.mask_list_cycle[idx], (out_w, out_h), interpolation=cv2.INTER_AREA)
+        bbox = self._scale_bbox(self.coord_list_cycle[idx])
+        if self.render_cache_size > 0:
+            self._render_cache[idx] = (frame, mask, bbox)
+            while len(self._render_cache) > self.render_cache_size:
+                self._render_cache.popitem(last=False)
+        return frame, mask, bbox, src_w, src_h, out_w, out_h, out_scale
 
     def _put_track_frame(self, track, frame, loop):
         if track is None or loop is None:
@@ -550,6 +656,7 @@ class LipReal(BaseReal):
                 self._idle_frame_index += 1
                 res_frame = None
                 audio_frames = None
+            combine_needs_resize = False
 
             # 连续两帧均为静音数据，或者没有音频数据（处于等待状态）
             if audio_frames is None or (audio_frames[0][1] != 0 and audio_frames[1][1] != 0):
@@ -562,16 +669,36 @@ class LipReal(BaseReal):
                         self.custom_index[audiotype])
                     combine_frame = self.custom_img_cycle[audiotype][mirindex]
                     self.custom_index[audiotype] += 1
+                    combine_needs_resize = True
+                    src_h, src_w = combine_frame.shape[:2]
+                    out_w, out_h, out_scale = self._target_output_size(src_w, src_h)
                 else:
-                    combine_frame = self.frame_list_cycle[idx]
-                    mask_frame = self.mask_list_cycle[idx]
+                    (
+                        combine_frame,
+                        mask_frame,
+                        _,
+                        src_w,
+                        src_h,
+                        out_w,
+                        out_h,
+                        out_scale,
+                    ) = self._get_render_assets(idx)
                     combine_frame = self.blend_images(combine_frame,
-                                                      mask_frame, self.bg_img)
+                                                      mask_frame, self._render_bg_img)
             else:
                 self.speaking = True
-                bbox = self.coord_list_cycle[idx]
+                (
+                    base_frame,
+                    mask_frame,
+                    bbox,
+                    src_w,
+                    src_h,
+                    out_w,
+                    out_h,
+                    out_scale,
+                ) = self._get_render_assets(idx)
                 # 性能优化：禁止使用 copy.deepcopy，改用高效的 .copy()
-                combine_frame = self.frame_list_cycle[idx].copy()
+                combine_frame = base_frame.copy()
                 y1, y2, x1, x2 = bbox
                 try:
                     res_frame = cv2.resize(res_frame.astype(np.uint8),
@@ -580,9 +707,8 @@ class LipReal(BaseReal):
                     continue
 
                 combine_frame[y1:y2, x1:x2] = res_frame
-                mask_frame = self.mask_list_cycle[idx]
                 combine_frame = self.blend_images(combine_frame, mask_frame,
-                                                  self.bg_img)
+                                                  self._render_bg_img)
 
             # 音画同步优化：优先推送音频包
             if audio_frames is not None:
@@ -605,7 +731,8 @@ class LipReal(BaseReal):
                     self._put_track_frame(audio_track, new_frame, loop)
 
             # 音频包推送后再进行耗时的视频转换，确保声音优先
-            combine_frame, src_w, src_h, out_w, out_h, out_scale = self._resize_output_frame(combine_frame)
+            if combine_needs_resize:
+                combine_frame, src_w, src_h, out_w, out_h, out_scale = self._resize_output_frame(combine_frame)
             new_frame = VideoFrame.from_ndarray(combine_frame, format="bgr24")
             self._put_track_frame(video_track, new_frame, loop)
 
