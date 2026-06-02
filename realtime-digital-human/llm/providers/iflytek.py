@@ -16,7 +16,7 @@ import websocket
 from loguru import logger
 
 from basereal import BaseReal
-from perf_logger import elapsed_ms, log_perf, now
+from perf_logger import elapsed_ms, log_perf, log_timepoint, now
 
 
 def _find_last_punct(text: str) -> int:
@@ -312,6 +312,14 @@ def llm_response(
                             first_token_received = True
                             logger.info(
                                 f"讯飞LLM首次响应耗时: {time.perf_counter() - start_time:.2f}s"
+                            )
+                            log_timepoint(
+                                "LLM",
+                                "流式回答第一个字",
+                                trace_id=trace_id,
+                                sessionid=sessionid,
+                                first_char=chunk[:1],
+                                chunk_len=len(chunk),
                             )
                             log_perf(
                                 "trace",

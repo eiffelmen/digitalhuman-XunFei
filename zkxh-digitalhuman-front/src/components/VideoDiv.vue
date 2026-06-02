@@ -5,6 +5,7 @@ import { nextTick, onMounted, onUnmounted, ref, defineEmits } from 'vue';
 import { buildApiUrl, buildWsUrl } from '@/config';
 import { getPublicUrl } from '@/utils/getAssets';
 let pc = null;
+let webFirstFrameLogged = false;
 defineExpose({
 	getPoster,
 	start,
@@ -22,6 +23,46 @@ function startPlayVideo() {
 }
 const loading = ref(true);
 const poster = ref('');
+
+function formatTraceTime() {
+	const now = new Date();
+	const pad = value => String(value).padStart(2, '0');
+	const ms = String(now.getMilliseconds()).padStart(3, '0');
+	return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${ms}`;
+}
+
+function logFrontendTimepoint(module, event, fields = {}) {
+	const detail = Object.entries(fields)
+		.filter(([, value]) => value !== undefined && value !== null && value !== '')
+		.map(([key, value]) => `${key}=${String(value).replace(/\s+/g, '_')}`)
+		.join(' ');
+	console.log(`[时间点] 模块=${module} 事件=${event} 时间=${formatTraceTime()}${detail ? ` ${detail}` : ''}`);
+}
+
+function logWebFirstFrame(videoElem) {
+	if (!videoElem || webFirstFrameLogged) {
+		return;
+	}
+
+	const emitFirstFrame = () => {
+		if (webFirstFrameLogged) {
+			return;
+		}
+		webFirstFrameLogged = true;
+		logFrontendTimepoint('Web', '显示第一帧', {
+			sessionid: eventBus.sessionId,
+			video_width: videoElem.videoWidth,
+			video_height: videoElem.videoHeight,
+			ready_state: videoElem.readyState,
+		});
+	};
+
+	if (typeof videoElem.requestVideoFrameCallback === 'function') {
+		videoElem.requestVideoFrameCallback(emitFirstFrame);
+	} else {
+		videoElem.addEventListener('playing', emitFirstFrame, { once: true });
+	}
+}
 
 function getPoster() {
 	return new Promise((resolve, reject) => {
@@ -45,6 +86,7 @@ function getPoster() {
 function start() {
 	console.log('start eventBus.sessionId:', eventBus.sessionId);
 	loading.value = true;
+	webFirstFrameLogged = false;
 	var config = {
 		sdpSemantics: 'unified-plan',
 	};
@@ -74,11 +116,13 @@ function start() {
 				nextTick(() => {
 					loading.value = false;
 				});
+				logWebFirstFrame(videoElem);
 			});
 
 			// 监听视频真正开始播放的事件
 			videoElem.addEventListener('playing', () => {
 				console.log('Video is now playing');
+				logWebFirstFrame(videoElem);
 				emit('videoReady', true);
 			}, { once: true });
 		} else {

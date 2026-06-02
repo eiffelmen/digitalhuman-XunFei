@@ -28,7 +28,7 @@ from aiortc import (
     RTCConfiguration,
 )
 from mylogger import logger
-from perf_logger import elapsed_ms, log_perf, now, perf_timer
+from perf_logger import elapsed_ms, log_perf, log_timepoint, now, perf_timer
 
 
 class AppState:
@@ -394,6 +394,15 @@ def _timed_llm_response(
             provider=provider,
             sessionid=sessionid,
             text_len=len(message),
+        )
+        log_timepoint(
+            "LLM",
+            "第一次请求",
+            trace_id=trace_id,
+            provider=provider,
+            sessionid=sessionid,
+            text_len=len(message),
+            first_char=message[:1],
         )
         signature = inspect.signature(llm_response)
         if "trace_id" in signature.parameters:

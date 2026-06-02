@@ -10,9 +10,65 @@ const chatBox = ref(null);
 
 // WebSocket 实例
 let asrWebSocket = null;
+let asrFirstTextLogged = false;
+let asrEndLogged = false;
+
+function formatTraceTime() {
+  const now = new Date();
+  const pad = value => String(value).padStart(2, '0');
+  const ms = String(now.getMilliseconds()).padStart(3, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${ms}`;
+}
+
+function logFrontendTimepoint(module, event, fields = {}) {
+  const detail = Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${key}=${String(value).replace(/\s+/g, '_')}`)
+    .join(' ');
+  console.log(`[时间点] 模块=${module} 事件=${event} 时间=${formatTraceTime()}${detail ? ` ${detail}` : ''}`);
+}
+
+function resetAsrTraceFlags() {
+  asrFirstTextLogged = false;
+  asrEndLogged = false;
+}
+
+function markAsrFirstText(text, source = 'websocket') {
+  if (!text || asrFirstTextLogged) {
+    return;
+  }
+  asrFirstTextLogged = true;
+  asrEndLogged = false;
+  logFrontendTimepoint('ASR', '收到第一个字', {
+    first_char: text.slice(0, 1),
+    text_len: text.length,
+    source,
+  });
+}
+
+function markAsrEnd(reason = 'final') {
+  if (!asrFirstTextLogged || asrEndLogged) {
+    return;
+  }
+  asrEndLogged = true;
+  logFrontendTimepoint('ASR', '结束', { reason });
+}
+
+function isFinalAsrMessage(data) {
+  return Boolean(
+    data?.finish ||
+    data?.final ||
+    data?.is_final ||
+    data?.isFinal ||
+    data?.mode === 'offline' ||
+    data?.mode === '2pass-offline' ||
+    data?.type === 'final'
+  );
+}
 
 // Android WebView ASR intermediate result handler - 使用事件机制
 window.handleAsrIntermediate = (text) => {
+  markAsrFirstText(text, 'android');
   window.dispatchEvent(new CustomEvent('asr-intermediate', { detail: text }));
 };
 
@@ -38,7 +94,9 @@ function resetClearMessageTimer() {
   // 设置新的5秒倒计时
   clearMessageTimer = setTimeout(() => {
     console.log('[倒计时] 5秒内无新消息，清空messagebox');
+    markAsrEnd('5秒无新消息');
     messagebox.value = '';
+    resetAsrTraceFlags();
     clearMessageTimer = null;
   }, 5000); // 5秒
   
@@ -79,6 +137,7 @@ function initAsrWebSocket() {
     // 连接成功
     asrWebSocket.addEventListener('open', () => {
       console.log('[ASR WebSocket] 连接成功');
+      resetAsrTraceFlags();
     });
     
     // 接收消息
@@ -89,13 +148,19 @@ function initAsrWebSocket() {
         
         // 将 ASR 识别结果放入 messagebox
         if (data.text || data.result) {
-          messagebox.value = data.text || data.result;
+          const asrText = data.text || data.result;
+          markAsrFirstText(asrText, 'websocket');
+          messagebox.value = asrText;
           // 收到消息后重置倒计时
           resetClearMessageTimer();
+          if (isFinalAsrMessage(data)) {
+            markAsrEnd(data.mode || data.type || 'final');
+          }
         }
       } catch (error) {
         console.error('[ASR WebSocket] 解析消息失败:', error);
         // 如果不是 JSON，直接显示
+        markAsrFirstText(event.data, 'raw');
         messagebox.value = event.data;
         // 收到消息后重置倒计时
         resetClearMessageTimer();
@@ -105,6 +170,7 @@ function initAsrWebSocket() {
     // 连接关闭
     asrWebSocket.addEventListener('close', () => {
       console.log('[ASR WebSocket] 连接关闭');
+      markAsrEnd('websocket关闭');
     });
     
     // 连接错误

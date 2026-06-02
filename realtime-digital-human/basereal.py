@@ -5,7 +5,7 @@ import soundfile as sf
 from tqdm import tqdm
 from loguru import logger
 from concurrent.futures import ThreadPoolExecutor
-from perf_logger import log_perf
+from perf_logger import log_perf, log_timepoint
 from ttsreal import (EdgeTTS, VoitsTTS, GSVV2TTS,
                      CosyVoiceTTS, FishTTS, SparkTTS, FlashTTS,
                      IflytekTTS, GonganTTS, GywtTTS)
@@ -65,6 +65,10 @@ class BaseReal:
         self._active_tts_trace_id = None
         self._active_tts_segment_index = None
         self._active_tts_first_audio_frame_logged = False
+        self._pending_wav2lip_trace_id = None
+        self._pending_wav2lip_segment_index = None
+        self._pending_wav2lip_first_output_logged = False
+        self._pending_wav2lip_waiting = False
         self._active_chat_trace_id = None
         self.custom_img_cycle = {}
         self.custom_audio_cycle = {}
@@ -102,11 +106,19 @@ class BaseReal:
         self._active_tts_first_audio_frame_logged = False
 
     def put_audio_frame(self, audio_chunk):  # 16khz 20ms pcm
-        if (
-            self._active_tts_trace_id
-            and not self._active_tts_first_audio_frame_logged
-        ):
+        if not self._active_tts_first_audio_frame_logged:
             self._active_tts_first_audio_frame_logged = True
+            self._pending_wav2lip_trace_id = self._active_tts_trace_id
+            self._pending_wav2lip_segment_index = self._active_tts_segment_index
+            self._pending_wav2lip_first_output_logged = False
+            self._pending_wav2lip_waiting = True
+            log_timepoint(
+                "Wav2Lip",
+                "收到第一个字对应音频",
+                trace_id=self._active_tts_trace_id,
+                segment_index=self._active_tts_segment_index,
+                samples=len(audio_chunk),
+            )
             log_perf(
                 "trace",
                 "first_audio_frame_queued",

@@ -17,7 +17,7 @@ from io import BytesIO
 from loguru import logger
 from typing import Iterator, Optional
 from threading import Thread, Event, Lock
-from perf_logger import elapsed_ms, log_perf, now
+from perf_logger import elapsed_ms, log_perf, log_timepoint, now
 
 
 def _env_int(name: str, default: int) -> int:
@@ -95,6 +95,15 @@ class BaseTTS(object):
                 continue
             start = now()
             success = True
+            log_timepoint(
+                "TTS",
+                "收到第一个字",
+                trace_id=trace_id,
+                segment_index=segment_index,
+                first_char=msg[:1],
+                text_len=len(msg),
+                tts_type=getattr(self.opt, "tts", None),
+            )
             if trace_id:
                 log_perf(
                     "trace",
@@ -1004,9 +1013,20 @@ class IflytekTTS(BaseTTS):
             yield chunk
 
     def stream_tts(self, audio_stream: Iterator[bytes]) -> None:
+        first_audio_chunk_logged = False
         for chunk in audio_stream:
             if not chunk:
                 continue
+            if not first_audio_chunk_logged:
+                first_audio_chunk_logged = True
+                log_timepoint(
+                    "TTS",
+                    "流式返回第一个字",
+                    trace_id=getattr(self.parent, "_active_tts_trace_id", None),
+                    segment_index=getattr(self.parent, "_active_tts_segment_index", None),
+                    audio_bytes=len(chunk),
+                    tts_type=getattr(self.opt, "tts", None),
+                )
             logger.info(f"IflytekTTS stream_tts: chunk {len(chunk)} bytes")
             t0 = time.time()
             try:

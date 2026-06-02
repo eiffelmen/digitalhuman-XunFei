@@ -24,7 +24,7 @@ from tqdm import tqdm
 from loguru import logger
 from functools import lru_cache
 from collections import OrderedDict
-from perf_logger import elapsed_ms, log_perf, now
+from perf_logger import elapsed_ms, log_perf, log_timepoint, now
 
 import warnings
 
@@ -769,6 +769,24 @@ class LipReal(BaseReal):
             if combine_needs_resize:
                 combine_frame, src_w, src_h, out_w, out_h, out_scale = self._resize_output_frame(combine_frame)
             new_frame = VideoFrame.from_ndarray(combine_frame, format="bgr24")
+            if (
+                self.speaking
+                and getattr(self, "_pending_wav2lip_waiting", False)
+                and not getattr(self, "_pending_wav2lip_first_output_logged", False)
+            ):
+                self._pending_wav2lip_first_output_logged = True
+                self._pending_wav2lip_waiting = False
+                log_timepoint(
+                    "Wav2Lip",
+                    "流式输出第一帧",
+                    trace_id=self._pending_wav2lip_trace_id,
+                    segment_index=self._pending_wav2lip_segment_index,
+                    source_size=f"{src_w}x{src_h}",
+                    output_size=f"{out_w}x{out_h}",
+                    output_scale=f"{out_scale:.3f}",
+                    video_queue=video_track._queue.qsize() if video_track is not None else -1,
+                    audio_queue=audio_track._queue.qsize() if audio_track is not None else -1,
+                )
             self._put_track_frame(video_track, new_frame, loop)
 
             render_count += 1
