@@ -105,6 +105,10 @@ class BaseReal:
         self._active_tts_segment_index = None
         self._active_tts_first_audio_frame_logged = False
 
+    def _prepare_first_audio_frame(self):
+        """Hook for realtime renderers to remove stale idle work before speech."""
+        return None
+
     def put_audio_frame(self, audio_chunk):  # 16khz 20ms pcm
         if not self._active_tts_first_audio_frame_logged:
             self._active_tts_first_audio_frame_logged = True
@@ -126,6 +130,7 @@ class BaseReal:
                 segment_index=self._active_tts_segment_index,
                 samples=len(audio_chunk),
             )
+            self._prepare_first_audio_frame()
         self.asr.put_audio_frame(audio_chunk)
 
     def pause_talk(self):
