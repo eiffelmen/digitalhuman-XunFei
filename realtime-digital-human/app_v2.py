@@ -797,6 +797,19 @@ if __name__ == "__main__":
         "--wav2lip_size", type=int, default=256, help="wavlip处理图像大小"
     )
     parser.add_argument(
+        "--wav2lip_backend",
+        type=str,
+        default=os.getenv("WAV2LIP_BACKEND", "pytorch"),
+        choices=["pytorch", "tensorrt", "trt"],
+        help="Wav2Lip推理后端：pytorch 或 tensorrt",
+    )
+    parser.add_argument(
+        "--wav2lip_engine_path",
+        type=str,
+        default=os.getenv("WAV2LIP_ENGINE_PATH", "./wav2lip256/wav2lip_fp16.engine"),
+        help="TensorRT engine文件路径，仅wav2lip_backend=tensorrt时使用",
+    )
+    parser.add_argument(
         "--tts",
         type=str,
         default="flashtts",
@@ -851,9 +864,15 @@ if __name__ == "__main__":
         from lipreal import LipReal, load_model, load_avatar, warm_up
 
         logger.info(opt)
-        model = load_model(opt.model_path)
+        model = load_model(
+            opt.model_path,
+            backend=opt.wav2lip_backend,
+            engine_path=opt.wav2lip_engine_path,
+            batch_size=opt.batch_size,
+            modelres=opt.wav2lip_size,
+        )
         avatar = load_avatar(opt.avatar_id)
-        warm_up(opt.batch_size, model, 256)
+        warm_up(opt.batch_size, model, opt.wav2lip_size)
 
     opt.customopt = []
     if opt.customvideo_config != "":

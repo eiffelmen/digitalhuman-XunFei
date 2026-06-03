@@ -55,6 +55,14 @@ def _sync_device():
 log_perf("wav2lip", "device", device=device, device_name=_device_name())
 
 
+def _normalize_backend(backend=None):
+    return (backend or os.getenv("WAV2LIP_BACKEND", "pytorch")).strip().lower()
+
+
+def _model_backend(model):
+    return getattr(model, "backend_name", "pytorch")
+
+
 def _load(checkpoint_path):
     if device == 'cuda':
         checkpoint = torch.load(checkpoint_path)
@@ -64,8 +72,37 @@ def _load(checkpoint_path):
     return checkpoint
 
 
-def load_model(path):
+def load_model(path, backend=None, engine_path=None, batch_size=16, modelres=256):
     start = now()
+    backend = _normalize_backend(backend)
+    if backend in {"trt", "tensorrt"}:
+        engine_path = engine_path or os.getenv(
+            "WAV2LIP_ENGINE_PATH", "./wav2lip256/wav2lip_fp16.engine"
+        )
+        logger.info("从 {} 加载 TensorRT Wav2Lip engine。".format(engine_path))
+        from wav2lip_tensorrt import TensorRTWav2Lip
+
+        model = TensorRTWav2Lip(engine_path, device=device)
+        _sync_device()
+        log_perf(
+            "wav2lip",
+            "load_model",
+            elapsed_ms(start),
+            backend="tensorrt",
+            engine_path=engine_path,
+            device=device,
+            device_name=_device_name(),
+            batch_size=batch_size,
+            modelres=modelres,
+            cuda_mem_mb=_cuda_mem_mb(),
+        )
+        return model
+
+    if backend != "pytorch":
+        raise ValueError(
+            f"Unsupported Wav2Lip backend: {backend}. Use pytorch or tensorrt."
+        )
+
     model = Wav2Lip()
     logger.info("从 {} 加载检查点。".format(path))
     checkpoint = _load(path)
@@ -82,6 +119,7 @@ def load_model(path):
         "wav2lip",
         "load_model",
         elapsed_ms(start),
+        backend="pytorch",
         device=device,
         device_name=_device_name(),
         cuda_mem_mb=_cuda_mem_mb(),
@@ -137,6 +175,7 @@ def warm_up(batch_size, model, modelres):
         "wav2lip",
         "warm_up",
         elapsed_ms(start),
+        backend=_model_backend(model),
         device=device,
         device_name=_device_name(),
         batch_size=batch_size,
@@ -324,6 +363,7 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                         "wav2lip",
                         "fast_first_frame_inference",
                         model_duration_ms,
+                        backend=_model_backend(model),
                         device=device,
                         device_name=_device_name(),
                         batch_size=batch_size,
@@ -341,6 +381,7 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                         "wav2lip",
                         "inference",
                         counttime * 1000,
+                        backend=_model_backend(model),
                         device=device,
                         device_name=_device_name(),
                         frames=count,

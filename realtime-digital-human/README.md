@@ -48,13 +48,54 @@ bash run_digitalman_server.sh
 - 默认端口：`8010`
 - 默认 `LLM_PROVIDER=gongan`
 - 可选 `LLM_PROVIDER`：`gongan`、`rag`、`chatgpt_oss`、`ratubrain`、`aliyun`、`iflytek`
-- 默认 `CUDA_VISIBLE_DEVICES=1`
+- 默认 `CUDA_VISIBLE_DEVICES=0`
+- 默认 `WAV2LIP_BACKEND=pytorch`
 
 可通过环境变量覆盖：
 
 ```bash
 LLM_PROVIDER=rag LISTEN_PORT=8010 CUDA_VISIBLE_DEVICES=0 bash run_digitalman_server.sh
 ```
+
+### Wav2Lip TensorRT 加速
+
+Mac 本机可以完成 `.pth` 到 `.onnx` 的导出和检查；TensorRT `.engine` 需要在 NVIDIA GPU 的 Ubuntu 服务器上生成。
+
+1. 在 Mac 或服务器上导出 ONNX：
+
+```bash
+python scripts/export_wav2lip_onnx.py \
+  --checkpoint ./wav2lip256/wav2lip.pth \
+  --output ./wav2lip256/wav2lip_256.onnx
+```
+
+2. 检查 ONNX 输入输出：
+
+```bash
+python scripts/inspect_wav2lip_onnx.py ./wav2lip256/wav2lip_256.onnx
+```
+
+期望输入输出名称：
+
+- `mel`: `[batch, 1, 80, 16]`
+- `face`: `[batch, 6, 256, 256]`
+- `pred`: `[batch, 3, 256, 256]`
+
+3. 在 Ubuntu GPU 服务器上生成 TensorRT engine：
+
+```bash
+bash scripts/build_wav2lip_tensorrt.sh
+```
+
+4. 在服务器 `.env` 中切换到 TensorRT：
+
+```bash
+WAV2LIP_BACKEND=tensorrt
+WAV2LIP_ENGINE_PATH=./wav2lip256/wav2lip_fp16.engine
+CUDA_VISIBLE_DEVICES=0
+```
+
+不填写这两个 TensorRT 配置时，服务会继续使用原来的 PyTorch 推理方式。
 
 ### 访问方式
 
