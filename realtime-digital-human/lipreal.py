@@ -243,7 +243,8 @@ def _drain_queue_nowait(target_queue):
 
 def _is_idle_frame_item(item):
     try:
-        res_frame, _, audio_frames = item
+        res_frame = item[0]
+        audio_frames = item[2]
     except Exception:
         return False
 
@@ -257,10 +258,35 @@ def _is_idle_frame_item(item):
         return False
 
 
+def _consume_latest_queue_value(target_queue):
+    if target_queue is None:
+        return None
+
+    value = None
+    while True:
+        try:
+            value = target_queue.get_nowait()
+        except Exception:
+            break
+    return value
+
+
+def _replace_queue_value(target_queue, value):
+    if target_queue is None:
+        return
+
+    _consume_latest_queue_value(target_queue)
+    try:
+        target_queue.put_nowait(value)
+    except Exception:
+        pass
+
+
 @torch.inference_mode()
 def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
               audio_out_queue, res_frame_queue, model, ready_event,
-              reset_event=None, fast_speech_event=None):
+              reset_event=None, fast_speech_event=None,
+              speech_start_index_queue=None):
     try:
         length = len(face_list_cycle)
         index = 0
@@ -291,6 +317,9 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
         while not quit_event.is_set():
             if reset_event is not None and reset_event.is_set():
                 last_mel_batch = None
+                start_index = _consume_latest_queue_value(speech_start_index_queue)
+                if start_index is not None:
+                    index = max(0, int(start_index))
                 reset_event.clear()
             fast_first_pending = (
                 fast_speech_event is not None and fast_speech_event.is_set()
@@ -305,7 +334,9 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                         time.sleep(0.001)
                         continue
                     # 队列为空，推送一帧待机帧以维持 WebRTC 心跳
-                    res_frame_queue.put((None, __mirror_index(length, index), None))
+                    res_frame_queue.put(
+                        (None, __mirror_index(length, index), None, index)
+                    )
                     index += 1
                     continue
             else:
@@ -331,18 +362,21 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                 if fast_first_pending:
                     time.sleep(0.001)
                     continue
-                res_frame_queue.put((None, __mirror_index(length, index), None))
+                res_frame_queue.put(
+                    (None, __mirror_index(length, index), None, index)
+                )
                 index += 1
                 continue
 
             if is_all_silence:
                 for i in range(current_batch_size):
                     res_frame_queue.put((None, __mirror_index(length, index),
-                                         audio_frames[i * 2:i * 2 + 2]))
+                                         audio_frames[i * 2:i * 2 + 2], index))
                     index += 1
             else:
                 t = time.perf_counter()
                 img_batch = []
+                batch_start_index = index
                 for i in range(current_batch_size):
                     idx = __mirror_index(length, index + i)
                     face = face_list_cycle[idx]
@@ -384,6 +418,8 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                         device_name=_device_name(),
                         batch_size=batch_size,
                         first_batch_size=current_batch_size,
+                        start_index=batch_start_index,
+                        start_avatar_index=__mirror_index(length, batch_start_index),
                         cleared_wav2lip_frames=cleared_frames,
                         cuda_mem_mb=_cuda_mem_mb(),
                     )
@@ -414,7 +450,7 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                 for i, res_frame in enumerate(pred):
                     res_frame_queue.put(
                         (res_frame, __mirror_index(length, index),
-                         audio_frames[i * 2:i * 2 + 2]))
+                         audio_frames[i * 2:i * 2 + 2], index))
                     index += 1
 
         logger.info('lipreal inference processor stop')
@@ -451,8 +487,15 @@ class LipReal(BaseReal):
         self._video_track = None
         self.inference_reset_event = Event()
         self.fast_speech_event = Event()
+        self.speech_start_index_queue = queue.Queue(maxsize=1)
         self._idle_frame_index = 0
+        self._next_render_linear_index = 0
+        self._last_render_linear_index = None
+        self._last_render_avatar_index = None
         self.video_queue_max = int(os.getenv("WEBRTC_VIDEO_QUEUE_MAX", "3") or 3)
+        self.sync_speech_start_index = os.getenv(
+            "WAV2LIP_SYNC_SPEECH_START_INDEX", "1"
+        ).lower() not in {"0", "false", "no"}
         self.speech_start_bridge_frames = max(
             0, int(os.getenv("WAV2LIP_SPEECH_START_BRIDGE_FRAMES", "3") or 3)
         )
@@ -476,6 +519,7 @@ class LipReal(BaseReal):
         logger.info(
             "WebRTC output config: "
             f"queue_max={self.video_queue_max}, "
+            f"sync_speech_start_index={self.sync_speech_start_index}, "
             f"speech_start_bridge_frames={self.speech_start_bridge_frames}, "
             f"clear_tracks_on_speech={self.clear_tracks_on_speech}, "
             f"max_width={self.video_max_width}, "
@@ -518,7 +562,7 @@ class LipReal(BaseReal):
                   self.face_list_cycle, self.asr.feat_queue,
                   self.asr.output_queue, self.res_frame_queue, self.model,
                   self.inference_ready, self.inference_reset_event,
-                  self.fast_speech_event))
+                  self.fast_speech_event, self.speech_start_index_queue))
         self.inference_thread.start()
         self.inference_ready.wait(timeout=5.0)  # 添加超时以防止死锁
 
@@ -544,7 +588,7 @@ class LipReal(BaseReal):
                 break
 
         if keep_tail <= 0 or not drained:
-            return len(drained), 0
+            return len(drained), 0, None
 
         idle_tail = []
         for item in reversed(drained):
@@ -556,14 +600,17 @@ class LipReal(BaseReal):
 
         idle_tail.reverse()
         retained = 0
+        last_retained_linear_index = None
         for item in idle_tail:
             try:
                 self.res_frame_queue.put_nowait(item)
                 retained += 1
+                if len(item) >= 4:
+                    last_retained_linear_index = item[3]
             except Exception:
                 break
 
-        return len(drained) - retained, retained
+        return len(drained) - retained, retained, last_retained_linear_index
 
     def _clear_audio_queues(self):
         # 清理ASR相关的队列
@@ -619,6 +666,18 @@ class LipReal(BaseReal):
 
         return cleared["audio"], cleared["video"]
 
+    def _speech_start_linear_index(self, retained_bridge_frames=0,
+                                   last_retained_linear_index=None):
+        if not self.sync_speech_start_index:
+            return None
+
+        start_index = max(0, int(self._next_render_linear_index))
+        if last_retained_linear_index is not None:
+            start_index = max(start_index, int(last_retained_linear_index) + 1)
+        else:
+            start_index += max(0, int(retained_bridge_frames or 0))
+        return start_index
+
     def _prepare_first_audio_frame(self):
         enabled = os.getenv("WAV2LIP_FAST_FIRST_FRAME", "1").lower() not in {
             "0",
@@ -639,8 +698,10 @@ class LipReal(BaseReal):
             input_size = -1
         output_size = self._drain_queue(self.asr.output_queue)
         feat_size = self._drain_queue(self.asr.feat_queue)
-        frame_size, retained_bridge_frames = self._clear_frame_queue_keep_idle_tail(
-            self.speech_start_bridge_frames
+        frame_size, retained_bridge_frames, last_retained_linear_index = (
+            self._clear_frame_queue_keep_idle_tail(
+                self.speech_start_bridge_frames
+            )
         )
         if self.clear_tracks_on_speech:
             audio_track_size, video_track_size = self._clear_media_track_queues()
@@ -652,6 +713,12 @@ class LipReal(BaseReal):
             preserved_audio_track_size, preserved_video_track_size = (
                 self._media_track_queue_sizes()
             )
+        speech_start_index = self._speech_start_linear_index(
+            retained_bridge_frames=retained_bridge_frames,
+            last_retained_linear_index=last_retained_linear_index,
+        )
+        if speech_start_index is not None:
+            _replace_queue_value(self.speech_start_index_queue, speech_start_index)
 
         self.asr.force_next_batch_size = first_batch_size
         self.inference_reset_event.set()
@@ -669,6 +736,14 @@ class LipReal(BaseReal):
             cleared_asr_feat=feat_size,
             cleared_wav2lip_frames=frame_size,
             retained_bridge_frames=retained_bridge_frames,
+            last_retained_linear_index=last_retained_linear_index,
+            speech_start_index=speech_start_index,
+            speech_start_avatar_index=(
+                self.mirror_index(len(self.frame_list_cycle), speech_start_index)
+                if speech_start_index is not None else None
+            ),
+            last_render_linear_index=self._last_render_linear_index,
+            last_render_avatar_index=self._last_render_avatar_index,
             cleared_webrtc_audio=audio_track_size,
             cleared_webrtc_video=video_track_size,
             preserved_webrtc_audio=preserved_audio_track_size,
@@ -890,11 +965,15 @@ class LipReal(BaseReal):
                 continue
 
             try:
-                res_frame, idx, audio_frames = self.res_frame_queue.get(
-                    block=True, timeout=0.04)
+                frame_item = self.res_frame_queue.get(block=True, timeout=0.04)
+                if len(frame_item) >= 4:
+                    res_frame, idx, audio_frames, linear_idx = frame_item[:4]
+                else:
+                    res_frame, idx, audio_frames = frame_item
+                    linear_idx = self._next_render_linear_index
             except queue.Empty:
-                idx = self.mirror_index(len(self.frame_list_cycle), self._idle_frame_index)
-                self._idle_frame_index += 1
+                linear_idx = self._next_render_linear_index
+                idx = self.mirror_index(len(self.frame_list_cycle), linear_idx)
                 res_frame = None
                 audio_frames = None
             combine_needs_resize = False
@@ -992,8 +1071,14 @@ class LipReal(BaseReal):
                     output_scale=f"{out_scale:.3f}",
                     video_queue=video_track._queue.qsize() if video_track is not None else -1,
                     audio_queue=audio_track._queue.qsize() if audio_track is not None else -1,
-                )
+            )
             self._put_track_frame(video_track, new_frame, loop)
+            self._last_render_linear_index = linear_idx
+            self._last_render_avatar_index = idx
+            self._next_render_linear_index = max(
+                self._next_render_linear_index, int(linear_idx) + 1
+            )
+            self._idle_frame_index = self._next_render_linear_index
 
             render_count += 1
             if self.speaking:
