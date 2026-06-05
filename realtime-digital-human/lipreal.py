@@ -241,6 +241,22 @@ def _drain_queue_nowait(target_queue):
     return cleared
 
 
+def _is_idle_frame_item(item):
+    try:
+        res_frame, _, audio_frames = item
+    except Exception:
+        return False
+
+    if res_frame is not None:
+        return False
+    if audio_frames is None:
+        return True
+    try:
+        return all(audio_type != 0 for _, audio_type in audio_frames)
+    except Exception:
+        return False
+
+
 @torch.inference_mode()
 def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
               audio_out_queue, res_frame_queue, model, ready_event,
@@ -437,6 +453,12 @@ class LipReal(BaseReal):
         self.fast_speech_event = Event()
         self._idle_frame_index = 0
         self.video_queue_max = int(os.getenv("WEBRTC_VIDEO_QUEUE_MAX", "3") or 3)
+        self.speech_start_bridge_frames = max(
+            0, int(os.getenv("WAV2LIP_SPEECH_START_BRIDGE_FRAMES", "3") or 3)
+        )
+        self.clear_tracks_on_speech = os.getenv(
+            "WEBRTC_CLEAR_TRACKS_ON_SPEECH", "0"
+        ).lower() in {"1", "true", "yes"}
         self.video_max_width = int(os.getenv("WEBRTC_VIDEO_MAX_WIDTH", "540") or 0)
         self.video_max_height = int(os.getenv("WEBRTC_VIDEO_MAX_HEIGHT", "960") or 0)
         self.video_scale = float(os.getenv("WEBRTC_VIDEO_SCALE", "1.0") or 1.0)
@@ -454,6 +476,8 @@ class LipReal(BaseReal):
         logger.info(
             "WebRTC output config: "
             f"queue_max={self.video_queue_max}, "
+            f"speech_start_bridge_frames={self.speech_start_bridge_frames}, "
+            f"clear_tracks_on_speech={self.clear_tracks_on_speech}, "
             f"max_width={self.video_max_width}, "
             f"max_height={self.video_max_height}, "
             f"scale={self.video_scale}, "
@@ -511,6 +535,36 @@ class LipReal(BaseReal):
     def _clear_frame_queue(self):
         return self._drain_queue(self.res_frame_queue)
 
+    def _clear_frame_queue_keep_idle_tail(self, keep_tail=0):
+        drained = []
+        while True:
+            try:
+                drained.append(self.res_frame_queue.get_nowait())
+            except Exception:
+                break
+
+        if keep_tail <= 0 or not drained:
+            return len(drained), 0
+
+        idle_tail = []
+        for item in reversed(drained):
+            if not _is_idle_frame_item(item):
+                break
+            idle_tail.append(item)
+            if len(idle_tail) >= keep_tail:
+                break
+
+        idle_tail.reverse()
+        retained = 0
+        for item in idle_tail:
+            try:
+                self.res_frame_queue.put_nowait(item)
+                retained += 1
+            except Exception:
+                break
+
+        return len(drained) - retained, retained
+
     def _clear_audio_queues(self):
         # 清理ASR相关的队列
         input_size = self.asr.queue.qsize()
@@ -518,6 +572,22 @@ class LipReal(BaseReal):
         output_size = self._drain_queue(self.asr.output_queue)
         feat_size = self._drain_queue(self.asr.feat_queue)
         return input_size, output_size, feat_size
+
+    def _media_track_queue_sizes(self):
+        audio_size = 0
+        video_size = 0
+        for name, track in (("audio", self._audio_track), ("video", self._video_track)):
+            q = getattr(track, "_queue", None)
+            if q is None:
+                continue
+            try:
+                if name == "audio":
+                    audio_size = q.qsize()
+                else:
+                    video_size = q.qsize()
+            except Exception:
+                pass
+        return audio_size, video_size
 
     def _clear_media_track_queues(self):
         if self._audio_track is None and self._video_track is None:
@@ -559,7 +629,7 @@ class LipReal(BaseReal):
             return
 
         start = now()
-        first_batch_size = int(os.getenv("WAV2LIP_FIRST_BATCH_SIZE", "1") or 1)
+        first_batch_size = int(os.getenv("WAV2LIP_FIRST_BATCH_SIZE", "4") or 4)
         first_batch_size = max(1, min(first_batch_size, self.batch_size))
 
         input_size = self.asr.queue.qsize()
@@ -569,8 +639,19 @@ class LipReal(BaseReal):
             input_size = -1
         output_size = self._drain_queue(self.asr.output_queue)
         feat_size = self._drain_queue(self.asr.feat_queue)
-        frame_size = self._clear_frame_queue()
-        audio_track_size, video_track_size = self._clear_media_track_queues()
+        frame_size, retained_bridge_frames = self._clear_frame_queue_keep_idle_tail(
+            self.speech_start_bridge_frames
+        )
+        if self.clear_tracks_on_speech:
+            audio_track_size, video_track_size = self._clear_media_track_queues()
+            preserved_audio_track_size = 0
+            preserved_video_track_size = 0
+        else:
+            audio_track_size = 0
+            video_track_size = 0
+            preserved_audio_track_size, preserved_video_track_size = (
+                self._media_track_queue_sizes()
+            )
 
         self.asr.force_next_batch_size = first_batch_size
         self.inference_reset_event.set()
@@ -587,8 +668,11 @@ class LipReal(BaseReal):
             cleared_asr_output=output_size,
             cleared_asr_feat=feat_size,
             cleared_wav2lip_frames=frame_size,
+            retained_bridge_frames=retained_bridge_frames,
             cleared_webrtc_audio=audio_track_size,
             cleared_webrtc_video=video_track_size,
+            preserved_webrtc_audio=preserved_audio_track_size,
+            preserved_webrtc_video=preserved_video_track_size,
         )
 
     def flush_talk(self):
