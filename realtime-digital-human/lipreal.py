@@ -374,6 +374,12 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                                          audio_frames[i * 2:i * 2 + 2], index))
                     index += 1
             else:
+                if fast_first_pending:
+                    start_index = _consume_latest_queue_value(
+                        speech_start_index_queue
+                    )
+                    if start_index is not None:
+                        index = max(0, int(start_index))
                 t = time.perf_counter()
                 img_batch = []
                 batch_start_index = index
@@ -497,7 +503,7 @@ class LipReal(BaseReal):
             "WAV2LIP_SYNC_SPEECH_START_INDEX", "1"
         ).lower() not in {"0", "false", "no"}
         self.speech_start_bridge_frames = max(
-            0, int(os.getenv("WAV2LIP_SPEECH_START_BRIDGE_FRAMES", "3") or 3)
+            0, int(os.getenv("WAV2LIP_SPEECH_START_BRIDGE_FRAMES", "0") or 0)
         )
         self.clear_tracks_on_speech = os.getenv(
             "WEBRTC_CLEAR_TRACKS_ON_SPEECH", "0"
@@ -977,9 +983,16 @@ class LipReal(BaseReal):
                 res_frame = None
                 audio_frames = None
             combine_needs_resize = False
+            idle_frame = (
+                audio_frames is None
+                or (audio_frames[0][1] != 0 and audio_frames[1][1] != 0)
+            )
+            if idle_frame:
+                linear_idx = self._next_render_linear_index
+                idx = self.mirror_index(len(self.frame_list_cycle), linear_idx)
 
             # 连续两帧均为静音数据，或者没有音频数据（处于等待状态）
-            if audio_frames is None or (audio_frames[0][1] != 0 and audio_frames[1][1] != 0):
+            if idle_frame:
                 self.speaking = False
                 audiotype = audio_frames[0][1] if audio_frames is not None else 0
                 # 自定义视频播放
@@ -1079,6 +1092,15 @@ class LipReal(BaseReal):
                 self._next_render_linear_index, int(linear_idx) + 1
             )
             self._idle_frame_index = self._next_render_linear_index
+            if (
+                not self.speaking
+                and getattr(self, "_pending_wav2lip_waiting", False)
+                and not getattr(self, "_pending_wav2lip_first_output_logged", False)
+            ):
+                _replace_queue_value(
+                    self.speech_start_index_queue,
+                    self._next_render_linear_index,
+                )
 
             render_count += 1
             if self.speaking:
