@@ -13,12 +13,17 @@ const showChatLog = ref(false);
 const isMultiModal = ref(false);
 const chatBox = ref(null);
 
-async function scrollScreen() {
+let scrollAF = null;
+function scrollScreen() {
 	if (!chatBox.value || !(chatBox.value instanceof HTMLElement)) {
 		return;
 	}
-	await nextTick();
-	chatBox.value.scrollTop = chatBox.value.scrollHeight;
+	if (scrollAF) cancelAnimationFrame(scrollAF);
+	scrollAF = requestAnimationFrame(() => {
+		if (chatBox.value) {
+			chatBox.value.scrollTop = chatBox.value.scrollHeight;
+		}
+	});
 }
 
 const props = defineProps({
@@ -142,7 +147,7 @@ async function handleOutputtingState(context) {
 					}
 					return
 				}
-				await new Promise(resolve => setTimeout(resolve, 10));
+				await new Promise(resolve => setTimeout(resolve, 100));
 				continue;
 			}
 			const currentMsg = shiftNextMessage(id)
@@ -321,7 +326,7 @@ onMounted(() => {
 			class="chatview w-100 overflow-auto"
 			style="flex: 1"
 		>
-				<div class="d-flex" style="width: 100%;height: 300px;font-size: 5.25rem;color: white;">
+				<div style="width: 100%; font-size: 5.25rem; color: white; word-wrap: break-word; white-space: pre-wrap; line-height: 1.5;">
 				{{ messagebox }}
 				</div>
 		</div>

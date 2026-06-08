@@ -1,3 +1,4 @@
+import os
 import queue
 import numpy as np
 import torch.multiprocessing as mp
@@ -76,8 +77,10 @@ class BaseASR:
             audio_frame, type = self.get_audio_frame()
             self.frames.append(audio_frame)
             self.output_queue.put((audio_frame, type))
-        for _ in range(self.stride_left_size):
-            self.output_queue.get()
+        av_sync_offset = int(os.environ.get("AV_SYNC_OFFSET", "4"))
+        pop_count = max(0, self.stride_left_size - av_sync_offset)
+        for _ in range(pop_count):
+            self.output_queue.get_nowait()
 
     def run_step(self):
         pass

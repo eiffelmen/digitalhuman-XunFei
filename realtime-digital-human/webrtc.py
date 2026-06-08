@@ -54,10 +54,12 @@ class PlayerStreamTrack(MediaStreamTrack):
                 if wait > 0:
                     await asyncio.sleep(wait)
             else:
-                self._start = time.time()
+                if getattr(self._player, "start_time", None) is None:
+                    self._player.start_time = time.time()
+                self._start = self._player.start_time
                 self._timestamp = 0
                 self.timelist.append(self._start)
-                logger.info('video start:', self._start)
+                logger.info(f'video start: {self._start}')
             return self._timestamp, VIDEO_TIME_BASE
         else:  # audio
             if hasattr(self, "_timestamp"):
@@ -69,10 +71,12 @@ class PlayerStreamTrack(MediaStreamTrack):
                 if wait > 0:
                     await asyncio.sleep(wait)
             else:
-                self._start = time.time()
+                if getattr(self._player, "start_time", None) is None:
+                    self._player.start_time = time.time()
+                self._start = self._player.start_time
                 self._timestamp = 0
                 self.timelist.append(self._start)
-                logger.info('audio start:', self._start)
+                logger.info(f'audio start: {self._start}')
             return self._timestamp, AUDIO_TIME_BASE
 
     async def recv(self) -> Union[Frame, Packet]:

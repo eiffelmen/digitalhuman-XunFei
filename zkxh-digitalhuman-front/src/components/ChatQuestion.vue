@@ -182,11 +182,14 @@ function initAsrWebSocket() {
   }
 }
 
-watch(messagebox, async () => {
-  await nextTick();
-  if (chatBox.value) {
-    chatBox.value.scrollTop = chatBox.value.scrollHeight;
-  }
+let scrollAF = null;
+watch(messagebox, () => {
+  if (scrollAF) cancelAnimationFrame(scrollAF);
+  scrollAF = requestAnimationFrame(() => {
+    if (chatBox.value) {
+      chatBox.value.scrollTop = chatBox.value.scrollHeight;
+    }
+  });
 });
 
 /**

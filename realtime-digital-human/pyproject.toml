@@ -7,7 +7,7 @@ requires-python = ">=3.9"
 dependencies = [
     "aiohttp-cors>=0.8.1",
     "aiortc>=1.13.0",
-    "av>=14.4.0",
+    "av>=14.0.0",
     "dotenv>=0.9.9",
     "edge-tts>=7.0.2",
     "fastapi[standard]>=0.115.14",
@@ -26,5 +26,6 @@ dependencies = [
     "websockets==13.1",
 ]
 [tool.uv]
+index-strategy = "unsafe-best-match"
 index-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 extra-index-url = ["https://download.pytorch.org/whl/cu124"]

@@ -34,3 +34,5 @@ storage/
 storage.*/
 config.toml
 logs/
+
+data/

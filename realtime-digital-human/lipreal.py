@@ -32,7 +32,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 logger.info('正在使用{}进行推理。'.format(device))
-torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.benchmark = False
 
 
 def _device_name():
@@ -170,6 +170,12 @@ def warm_up(batch_size, model, modelres):
     img_batch = torch.ones(batch_size, 6, modelres, modelres).to(device)
     mel_batch = torch.ones(batch_size, 1, 80, 16).to(device)
     model(mel_batch, img_batch)
+    
+    # 同时预热 batch_size = 1，防止触发首字推理（force_next_batch_size=1）时引发重新 Benchmark 导致长达 1-2 秒的冷启动卡顿！
+    img_batch_1 = torch.ones(1, 6, modelres, modelres).to(device)
+    mel_batch_1 = torch.ones(1, 1, 80, 16).to(device)
+    model(mel_batch_1, img_batch_1)
+    
     _sync_device()
     log_perf(
         "wav2lip",
@@ -299,6 +305,7 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
             face = face_list_cycle[0]
             dummy_img = np.zeros((batch_size, face.shape[0], face.shape[1], 3), dtype=np.uint8)
             dummy_img_masked = dummy_img.copy()
+
             dummy_img_masked[:, face.shape[0] // 2:] = 0
             dummy_img_batch = np.concatenate((dummy_img_masked, dummy_img), axis=3) / 255.0
             dummy_mel_batch = np.zeros((batch_size, 1, 80, 16), dtype=np.float32)
@@ -314,9 +321,11 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
         ready_event.set()
 
         last_mel_batch = None
+        last_audio_frames = []
         while not quit_event.is_set():
             if reset_event is not None and reset_event.is_set():
                 last_mel_batch = None
+                last_audio_frames = []
                 start_index = _consume_latest_queue_value(speech_start_index_queue)
                 if start_index is not None:
                     index = max(0, int(start_index))
@@ -327,13 +336,10 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
 
             if last_mel_batch is None:
                 try:
-                    # 恢复超时时间为 0.04s，匹配 Batch 16 的节奏
-                    mel_batch = audio_feat_queue.get(block=True, timeout=0.04)
+                    # 使用 0.01s 超时，确保空闲状态产生帧的速度大于 25FPS，让 WebRTC 队列始终处于满载状态（无饥饿卡顿）
+                    mel_batch = audio_feat_queue.get(block=True, timeout=0.01)
                 except queue.Empty:
-                    if fast_first_pending:
-                        time.sleep(0.001)
-                        continue
-                    # 队列为空，推送一帧待机帧以维持 WebRTC 心跳
+                    # 不管有没有 fast_speech_event，都必须继续补充待机帧，否则会导致 WebRTC 缓冲区排空，刚开口前必定卡顿！
                     res_frame_queue.put(
                         (None, __mirror_index(length, index), None, index)
                     )
@@ -342,23 +348,25 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
             else:
                 mel_batch = last_mel_batch
                 last_mel_batch = None
+
             current_batch_size = len(mel_batch)
             current_batch_size = max(1, min(current_batch_size, batch_size))
 
             # 尝试获取对应的原始音频帧
             is_all_silence = True
-            audio_frames = []
+            audio_frames = last_audio_frames
+            last_audio_frames = []
+            
             try:
-                for _ in range(current_batch_size * 2):
-                    # 改为非阻塞，防止进入推理时被 ASR 的瞬时延迟卡住
-                    frame, type = audio_out_queue.get(block=False)
+                while len(audio_frames) < current_batch_size * 2:
+                    # 恢复为阻塞等待（0.1s超时）。ASR已确保按顺序推入队列，非阻塞会导致在 IPC 通信微小延迟时提前抛出 Empty 并丢弃已弹出的几十帧音频，造成严重的“吞字”和音画不同步！
+                    frame, type = audio_out_queue.get(block=True, timeout=0.1)
                     audio_frames.append((frame, type))
-                    if type == 0:
-                        is_all_silence = False
             except queue.Empty:
                 # 原始音频还没准备好（TTS传输中或ASR计算中）
-                # 此时不能丢弃 mel_batch，存起来下次循环再试，本次先发待机帧
+                # 此时不能丢弃 mel_batch 和已经获取的音频，存起来下次循环再试，本次先发待机帧
                 last_mel_batch = mel_batch
+                last_audio_frames = audio_frames
                 if fast_first_pending:
                     time.sleep(0.001)
                     continue
@@ -368,6 +376,10 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                 index += 1
                 continue
 
+            for _, type in audio_frames:
+                if type == 0:
+                    is_all_silence = False
+
             if is_all_silence:
                 for i in range(current_batch_size):
                     res_frame_queue.put((None, __mirror_index(length, index),
@@ -375,11 +387,11 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                     index += 1
             else:
                 if fast_first_pending:
-                    start_index = _consume_latest_queue_value(
-                        speech_start_index_queue
-                    )
-                    if start_index is not None:
-                        index = max(0, int(start_index))
+                    cleared_frames = _drain_queue_nowait(res_frame_queue)
+                    index = max(0, index - cleared_frames)
+                    fast_speech_event.clear()
+                    _consume_latest_queue_value(speech_start_index_queue)
+
                 t = time.perf_counter()
                 img_batch = []
                 batch_start_index = index
@@ -413,8 +425,6 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue,
                 model_duration_ms = elapsed_ms(model_start)
                 pred = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.
                 if fast_first_pending:
-                    cleared_frames = _drain_queue_nowait(res_frame_queue)
-                    fast_speech_event.clear()
                     log_perf(
                         "wav2lip",
                         "fast_first_frame_inference",
@@ -486,6 +496,9 @@ class LipReal(BaseReal):
             )
 
         self.batch_size = opt.batch_size  # 恢复为原始批次大小以提升稳定性
+        # 增加视频队列缓冲深度为 10（400ms）。
+        # Wav2Lip 处理一个 Batch(16帧) 需要约 300ms，必须有足够的待机或缓存帧垫底，否则必卡顿（Starvation）！
+        self.video_queue_max = 10
         self.res_frame_queue = queue.Queue(self.batch_size * 2)
         self.model = model
         self._media_loop = None
@@ -498,7 +511,7 @@ class LipReal(BaseReal):
         self._next_render_linear_index = 0
         self._last_render_linear_index = None
         self._last_render_avatar_index = None
-        self.video_queue_max = int(os.getenv("WEBRTC_VIDEO_QUEUE_MAX", "3") or 3)
+        self.video_queue_max = int(os.getenv("WEBRTC_VIDEO_QUEUE_MAX", "10") or 10)
         self.sync_speech_start_index = os.getenv(
             "WAV2LIP_SYNC_SPEECH_START_INDEX", "1"
         ).lower() not in {"0", "false", "no"}
@@ -937,19 +950,17 @@ class LipReal(BaseReal):
         return frame, mask, bbox, src_w, src_h, out_w, out_h, out_scale
 
     def _put_track_frame(self, track, frame, loop):
-        if track is None or loop is None:
-            return
-
-        def put_frame():
+        loop = loop or getattr(self, 'loop', None)
+        if loop is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(track._queue.put(frame), loop)
+            except Exception as exc:
+                logger.debug(f"WebRTC loop put skipped: {exc}")
+        else:
             try:
                 track._queue.put_nowait(frame)
             except Exception as exc:
                 logger.debug(f"WebRTC queue put skipped: {exc}")
-
-        try:
-            loop.call_soon_threadsafe(put_frame)
-        except Exception as exc:
-            logger.debug(f"WebRTC loop put skipped: {exc}")
 
     def process_frames(self,
                        quit_event,
@@ -971,7 +982,8 @@ class LipReal(BaseReal):
                 continue
 
             try:
-                frame_item = self.res_frame_queue.get(block=True, timeout=0.04)
+                # 使用 0.01s 超时，使待机帧能快速生成填满队列，完全由 video_queue_max 节流，避免 25fps 生成器与 25fps 消费者由于相位差导致的队列抽干卡顿。
+                frame_item = self.res_frame_queue.get(block=True, timeout=0.01)
                 if len(frame_item) >= 4:
                     res_frame, idx, audio_frames, linear_idx = frame_item[:4]
                 else:

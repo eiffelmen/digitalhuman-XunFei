@@ -211,6 +211,7 @@ async def offer(request):
             state.instanceid_pc.pop(sessionid, None)
 
     player = HumanPlayer(state.nerfreals[sessionid])
+    state.nerfreals[sessionid].loop = asyncio.get_event_loop()
     pc.addTrack(player.audio)
     pc.addTrack(player.video)
 
@@ -744,6 +745,7 @@ async def run(push_url, sessionid, state: AppState):
             state.pcs.discard(pc)
 
     player = HumanPlayer(state.nerfreals[sessionid])
+    state.nerfreals[sessionid].loop = asyncio.get_event_loop()
     audio_sender = pc.addTrack(player.audio)
     video_sender = pc.addTrack(player.video)
 

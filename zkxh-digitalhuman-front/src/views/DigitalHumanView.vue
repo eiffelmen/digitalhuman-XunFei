@@ -653,13 +653,16 @@ onUnmounted(() => {
 	/* top: 0px; */
 	top: 1630px !important;
 	left: 50%;
-	transform: translateX(-50%);
+	transform: translateX(-50%) translateZ(0);
+	will-change: transform;
 }
 .chat-quesiton{
 	height: 320px;
 	width: 1164px;
 	top: 1100px !important;
 	right: 230px !important;
+	transform: translateZ(0);
+	will-change: transform;
 }
 
 .loading-tips {

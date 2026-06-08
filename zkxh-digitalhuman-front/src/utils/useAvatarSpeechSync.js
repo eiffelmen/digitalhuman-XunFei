@@ -20,7 +20,7 @@ export function useAvatarSpeechSync() {
     }
   }
 
-  async function waitUntilSpeaking(signal, interval = 100) {
+  async function waitUntilSpeaking(signal, interval = 500) {
     while (!signal?.aborted) {
       if (await isAvatarSpeaking()) {
         return true;
@@ -31,7 +31,7 @@ export function useAvatarSpeechSync() {
     return false;
   }
 
-  async function waitUntilSilent(signal, interval = 100) {
+  async function waitUntilSilent(signal, interval = 500) {
     while (!signal?.aborted) {
       if (!await isAvatarSpeaking()) {
         return true;
