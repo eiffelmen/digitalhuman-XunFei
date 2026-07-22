@@ -4,26 +4,34 @@ from io import BytesIO
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from minio import Minio  # pip install minio==7.1.0
 
-
-def _get_required_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"缺少环境变量: {name}")
-    return value
-
-
-def _get_minio_client() -> Minio:
-    return Minio(
-        _get_required_env("MINIO_ENDPOINT"),
-        access_key=_get_required_env("MINIO_ACCESS_KEY"),
-        secret_key=_get_required_env("MINIO_SECRET_KEY"),
-        secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
-    )
-
-
-bucket_name = os.getenv("MINIO_BUCKET", "laboratory")
+bucket_name = os.environ.get("MINIO_BUCKET", "laboratory")
 
 app = FastAPI()
+
+
+def _get_minio_client():
+    minio_server = os.environ.get("MINIO_ENDPOINT")
+    minio_access_key = os.environ.get("MINIO_ACCESS_KEY")
+    minio_secret_key = os.environ.get("MINIO_SECRET_KEY")
+    minio_secure = os.environ.get("MINIO_SECURE", "0").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if not minio_server or not minio_access_key or not minio_secret_key:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "MinIO is not configured. Set MINIO_ENDPOINT, "
+                "MINIO_ACCESS_KEY and MINIO_SECRET_KEY."
+            ),
+        )
+    return Minio(
+        minio_server,
+        access_key=minio_access_key,
+        secret_key=minio_secret_key,
+        secure=minio_secure,
+    )
 
 
 def upload_file_to_minio_sync(file_data: BytesIO, file_name: str, file_type: str, file_size: int):
@@ -32,10 +40,10 @@ def upload_file_to_minio_sync(file_data: BytesIO, file_name: str, file_type: str
         minio_client = _get_minio_client()
         minio_client.put_object(bucket_name, file_name,
                                 file_data, file_size, content_type=file_type)
-        public_base_url = os.getenv("MINIO_PUBLIC_BASE_URL", "").rstrip("/")
-        if public_base_url:
-            return f"{public_base_url}/{bucket_name}/{file_name}"
-        return f"{bucket_name}/{file_name}"
+        public_base = os.environ.get("MINIO_PUBLIC_BASE_URL")
+        if public_base:
+            return f"{public_base.rstrip('/')}/{bucket_name}/{file_name}"
+        return f"minio://{bucket_name}/{file_name}"
     except Exception as err:
         print(f"上传文件失败: {err}")
         raise HTTPException(

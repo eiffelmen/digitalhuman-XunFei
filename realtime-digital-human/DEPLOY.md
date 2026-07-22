@@ -96,9 +96,54 @@ make start
 # 安装依赖
 uv sync
 
+# TensorRT 部署需要额外安装
+uv pip install onnx tensorrt-cu12
+
+# 验证 CUDA / TensorRT Python 包
+uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+uv run python -c "import tensorrt as trt; print(trt.__version__)"
+
+# 启动前预检模型、data、torch、TensorRT/engine
+bash scripts/check_deploy_ready.sh
+
 # 复制环境变量配置
 cp .env.template .env
 # 编辑 .env，填入实际的 API Key 等配置
+```
+
+### 生成 TensorRT engine
+
+TensorRT engine 必须在目标 GPU 服务器上生成，不能直接复用其他机器生成的文件。
+
+```bash
+cd /home/dsd/wz/digitalhuman-Xinjiang/realtime-digital-human
+
+uv run python scripts/export_wav2lip_onnx.py \
+  --checkpoint ./wav2lip256/wav2lip.pth \
+  --output ./wav2lip256/wav2lip_256.onnx
+
+PRECISION=fp16 \
+ONNX_PATH=./wav2lip256/wav2lip_256.onnx \
+ENGINE_PATH=./wav2lip256/wav2lip_server_fp16.engine \
+MODEL_SIZE=256 \
+MIN_BATCH=1 \
+OPT_BATCH=16 \
+MAX_BATCH=16 \
+WORKSPACE_MIB=2048 \
+bash scripts/build_wav2lip_tensorrt.sh
+```
+
+生成完成后在 `.env` 中启用：
+
+```bash
+WAV2LIP_BACKEND=tensorrt
+WAV2LIP_ENGINE_PATH=./wav2lip256/wav2lip_server_fp16.engine
+```
+
+如果暂时没有生成 engine，可以先用 PyTorch 后端启动：
+
+```bash
+WAV2LIP_BACKEND=pytorch bash run_iflytek_server.sh
 ```
 
 ---
@@ -108,6 +153,8 @@ cp .env.template .env
 - `.env` 不提交到 git，包含敏感配置
 - `make start` 默认把启动日志写到 `logs/server.log`
 - GPU 不够用时调小 `--max_session`
+- `uv run` 默认会同步依赖；依赖已安装且需要快速重启时，可设置 `UV_NO_SYNC=1`
+- `wav2lip.pth`、`*.onnx`、`*.engine`、`data/` 都是运行资产或生成产物，不提交到 GitHub
 
 ---
 
@@ -123,3 +170,13 @@ ps aux | grep app_v2.py
 # 确认端口在监听
 ss -tlnp | grep 8010
 ```
+
+常见部署报错：
+
+| 报错 | 原因 | 处理 |
+|------|------|------|
+| `ModuleNotFoundError: No module named 'torch'` | 新 `.venv` 没有同步依赖 | `cd realtime-digital-human && uv sync` |
+| `ModuleNotFoundError: No module named 'tensorrt'` | 当前环境缺 TensorRT Python 包 | `uv pip install tensorrt-cu12` |
+| `TensorRT engine not found` | `.env` 开了 TensorRT，但 engine 文件不存在 | 按“生成 TensorRT engine”重新生成 |
+| `exec: python: not found` | 系统没有 `python` 命令 | 构建脚本会优先使用 `uv run --no-sync python`；确认已安装 `uv` |
+| `Failed to deserialize TensorRT engine` | engine 与当前 TensorRT/GPU/驱动环境不匹配 | 删除旧 engine，在当前服务器重新生成 |

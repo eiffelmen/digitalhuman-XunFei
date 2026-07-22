@@ -7,6 +7,7 @@ import resampy
 import requests
 import asyncio
 import base64
+import re
 import websocket
 import edge_tts
 
@@ -47,7 +48,9 @@ class BaseTTS(object):
         self.chunk = self.sample_rate // self.fps
         self.input_stream = BytesIO()
 
-        self.msgqueue = queue.Queue()
+        self.msgqueue = queue.Queue(
+            maxsize=max(1, int(os.environ.get("TTS_TEXT_QUEUE_MAX", "32")))
+        )
         self.state = State.RUNNING
 
     def flush_talk(self):
@@ -56,13 +59,22 @@ class BaseTTS(object):
 
     def put_msg_txt(self, msg, trace_id=None, segment_index=None):
         if len(msg) > 0:
-            self.msgqueue.put(
-                {
-                    "text": msg,
-                    "trace_id": trace_id,
-                    "segment_index": segment_index,
-                }
-            )
+            item = {
+                "text": msg,
+                "trace_id": trace_id,
+                "segment_index": segment_index,
+            }
+            try:
+                self.msgqueue.put_nowait(item)
+            except queue.Full:
+                try:
+                    self.msgqueue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self.msgqueue.put_nowait(item)
+                except queue.Full:
+                    logger.warning("TTS text queue full; dropping newest segment")
 
     def render(self, quit_event):
         process_thread = Thread(target=self.process_tts, args=(quit_event,))
@@ -651,13 +663,9 @@ class IflytekTTS(BaseTTS):
         self._app_id = os.environ["IFLY_APP_ID"]
         self._api_key = os.environ["IFLY_API_KEY"]
         self._api_secret = os.environ.get("IFLYTEK_API_SECRET", os.environ.get("IFLY_API_SECRET", ""))
-        default_vcn = os.environ.get(
-            "IFLY_VCN",
-            getattr(opt, "ifly_vcn", "x2_xiaojuan"),
-        )
         self._vcn = os.environ.get(
-            "IFLYTEK_TTS_VCN",
-            os.environ.get("IFLYTEK_VCN", default_vcn),
+            "IFLYTEK_VCN",
+            os.environ.get("IFLY_VCN", getattr(opt, "ifly_vcn", "x2_xiaojuan")),
         )
         self._fallback_vcn = os.environ.get("IFLYTEK_TTS_FALLBACK_VCN", "xiaoyan")
         self._engine = os.environ.get("IFLYTEK_TTS_ENGINE", "aiui").lower()
@@ -896,7 +904,7 @@ class IflytekTTS(BaseTTS):
             if self.state == State.RUNNING:
                 yield chunk
 
-    def _ifly_tts(self, text: str, vcn: Optional[str] = None) -> Iterator[bytes]:
+    def _ifly_tts(self, text: str, vcn: str | None = None) -> Iterator[bytes]:
         if self._engine == "super":
             received_audio = False
             for chunk in self._super_tts(text):
@@ -1013,20 +1021,9 @@ class IflytekTTS(BaseTTS):
             yield chunk
 
     def stream_tts(self, audio_stream: Iterator[bytes]) -> None:
-        first_audio_chunk_logged = False
         for chunk in audio_stream:
             if not chunk:
                 continue
-            if not first_audio_chunk_logged:
-                first_audio_chunk_logged = True
-                log_timepoint(
-                    "TTS",
-                    "流式返回第一个字",
-                    trace_id=getattr(self.parent, "_active_tts_trace_id", None),
-                    segment_index=getattr(self.parent, "_active_tts_segment_index", None),
-                    audio_bytes=len(chunk),
-                    tts_type=getattr(self.opt, "tts", None),
-                )
             logger.info(f"IflytekTTS stream_tts: chunk {len(chunk)} bytes")
             t0 = time.time()
             try:
@@ -1054,6 +1051,8 @@ class IflytekTTS(BaseTTS):
 class GonganTTSStream:
     def __init__(self, owner):
         self._owner = owner
+        self._stream_id = hashlib.md5(f"{time.time()}-{id(self)}".encode()).hexdigest()[:10]
+        self._created_at = now()
         self._ws = owner._connect_ws()
         self._audio_state = owner._new_audio_state()
         self._lock = Lock()
@@ -1062,42 +1061,148 @@ class GonganTTSStream:
         self._end_sent = False
         self._segments_sent = 0
         self._segments_done = 0
+        self._recv_messages = 0
+        self._audio_packets = 0
+        self._audio_bytes = 0
+        self._status_counts = {}
+        self._finish_wait_timed_out = False
+        self._finish_requested = False
+        self._text_queue = queue.Queue()
+        self._segment_done = Event()
+        self._sender_done = Event()
 
         self._ws.send(json.dumps({"signal": "start"}, ensure_ascii=False))
         self._owner._mark_tts_stream_start()
+        log_perf(
+            "tts",
+            "stream_ws_start_sent",
+            trace_id=self._owner._current_trace_fields().get("trace_id"),
+            stream_id=self._stream_id,
+            tts_provider="gongan",
+        )
         self._thread = Thread(target=self._recv_loop, daemon=True)
         self._thread.start()
+        self._send_thread = Thread(target=self._send_loop, daemon=True)
+        self._send_thread.start()
 
     def send_text(self, text: str) -> None:
-        text = text.strip()
-        if not text:
-            return
+        segments = self._owner._split_tts_text(text)
         with self._lock:
-            if self._closed:
+            if self._closed or self._finish_requested:
                 return
-            self._segments_sent += 1
-            self._owner._mark_tts_first_text(text)
-            self._ws.send(
-                json.dumps(
-                    {"text": text, "spk_id": self._owner._spk_id},
-                    ensure_ascii=False,
-                )
-            )
+        for segment in segments:
+            self._text_queue.put(segment)
 
-    def finish(self, wait: bool = True) -> None:
+    def _send_loop(self) -> None:
+        try:
+            while True:
+                text = self._text_queue.get()
+                if text is None:
+                    break
+                text = text.strip()
+                if not text:
+                    continue
+                with self._lock:
+                    if self._closed:
+                        break
+                    self._segments_sent += 1
+                    segment_index = self._segments_sent
+                    self._segment_done.clear()
+                    self._owner._mark_tts_first_text(text)
+                    self._ws.send(
+                        json.dumps(
+                            {"text": text, "spk_id": self._owner._spk_id},
+                            ensure_ascii=False,
+                        )
+                    )
+                    segments_sent = self._segments_sent
+                trace_fields = self._owner._current_trace_fields()
+                log_perf(
+                    "tts",
+                    "stream_text_sent",
+                    trace_id=trace_fields.get("trace_id"),
+                    segment_index=trace_fields.get("segment_index") or segment_index,
+                    stream_id=self._stream_id,
+                    text_len=len(text),
+                    segments_sent=segments_sent,
+                    spk_id=self._owner._spk_id,
+                )
+                if not self._segment_done.wait(timeout=self._owner._segment_timeout):
+                    logger.warning(
+                        f"GonganTTS stream segment wait timed out stream_id={self._stream_id} "
+                        f"segment_index={segment_index} timeout={self._owner._segment_timeout}s"
+                    )
+                    log_perf(
+                        "tts",
+                        "stream_segment_wait_timeout",
+                        trace_id=trace_fields.get("trace_id"),
+                        stream_id=self._stream_id,
+                        segment_index=segment_index,
+                        segments_sent=segments_sent,
+                        segments_done=self._segments_done,
+                    )
+            self._send_end()
+        except Exception as exc:
+            if not self._closed:
+                logger.warning(f"GonganTTS stream sender error: {exc}")
+            self._done.set()
+        finally:
+            self._sender_done.set()
+
+    def _send_end(self) -> None:
         with self._lock:
-            if not self._end_sent and not self._closed:
-                try:
-                    self._ws.send(json.dumps({"signal": "end"}, ensure_ascii=False))
-                except Exception as exc:
-                    logger.warning(f"GonganTTS stream end send failed: {exc}")
-                self._end_sent = True
-            has_segments = self._segments_sent > 0
-            if has_segments and self._segments_done >= self._segments_sent:
+            if self._end_sent or self._closed:
+                return
+            try:
+                self._ws.send(json.dumps({"signal": "end"}, ensure_ascii=False))
+                log_perf(
+                    "tts",
+                    "stream_end_sent",
+                    trace_id=self._owner._current_trace_fields().get("trace_id"),
+                    stream_id=self._stream_id,
+                    segments_sent=self._segments_sent,
+                    segments_done=self._segments_done,
+                )
+            except Exception as exc:
+                logger.warning(f"GonganTTS stream end send failed: {exc}")
+            self._end_sent = True
+            if self._segments_sent == 0 or self._segments_done >= self._segments_sent:
                 self._done.set()
 
+    def finish(self, wait: bool = True) -> None:
+        finish_start = now()
+        with self._lock:
+            if not self._finish_requested:
+                self._finish_requested = True
+                self._text_queue.put(None)
+
+        self._sender_done.wait(timeout=max(1.0, self._owner._finish_timeout))
+        has_segments = self._segments_sent > 0
+
         if wait and has_segments:
-            self._done.wait(timeout=self._owner._finish_timeout)
+            finished = self._done.wait(timeout=self._owner._finish_timeout)
+            self._finish_wait_timed_out = not finished
+            log_perf(
+                "tts",
+                "stream_finish_wait",
+                elapsed_ms(finish_start),
+                trace_id=self._owner._current_trace_fields().get("trace_id"),
+                stream_id=self._stream_id,
+                finished=finished,
+                timed_out=not finished,
+                finish_timeout_s=self._owner._finish_timeout,
+                segments_sent=self._segments_sent,
+                segments_done=self._segments_done,
+                recv_messages=self._recv_messages,
+                audio_packets=self._audio_packets,
+                audio_bytes=self._audio_bytes,
+            )
+            if not finished:
+                logger.warning(
+                    f"GonganTTS stream finish timed out stream_id={self._stream_id} "
+                    f"segments_sent={self._segments_sent} segments_done={self._segments_done} "
+                    f"audio_packets={self._audio_packets} audio_bytes={self._audio_bytes}"
+                )
         self.close()
 
     def close(self) -> None:
@@ -1105,15 +1210,73 @@ class GonganTTSStream:
             if self._closed:
                 return
             self._closed = True
+            self._segment_done.set()
             try:
                 self._ws.close()
             except Exception:
                 pass
+        log_perf(
+            "tts",
+            "stream_close",
+            elapsed_ms(self._created_at),
+            trace_id=self._owner._current_trace_fields().get("trace_id"),
+            stream_id=self._stream_id,
+            segments_sent=self._segments_sent,
+            segments_done=self._segments_done,
+            recv_messages=self._recv_messages,
+            audio_packets=self._audio_packets,
+            audio_bytes=self._audio_bytes,
+            finish_wait_timed_out=self._finish_wait_timed_out,
+            status_counts=self._status_counts,
+        )
         self._owner._clear_active_stream(self)
 
     def abort(self) -> None:
+        logger.info(
+            f"GonganTTS stream abort stream_id={self._stream_id} "
+            f"segments_sent={self._segments_sent} segments_done={self._segments_done}"
+        )
+        log_perf(
+            "tts",
+            "stream_abort",
+            trace_id=self._owner._current_trace_fields().get("trace_id"),
+            stream_id=self._stream_id,
+            segments_sent=self._segments_sent,
+            segments_done=self._segments_done,
+            audio_packets=self._audio_packets,
+            audio_bytes=self._audio_bytes,
+        )
+        with self._lock:
+            self._finish_requested = True
+        self._text_queue.put(None)
+        self._segment_done.set()
         self._done.set()
         self.close()
+
+    def diagnostics(self):
+        return {
+            "stream_id": self._stream_id,
+            "age_s": round((now() - self._created_at), 3),
+            "closed": self._closed,
+            "end_sent": self._end_sent,
+            "segments_sent": self._segments_sent,
+            "segments_done": self._segments_done,
+            "pending_text_segments": self._text_queue.qsize(),
+            "recv_messages": self._recv_messages,
+            "audio_packets": self._audio_packets,
+            "audio_bytes": self._audio_bytes,
+            "finish_wait_timed_out": self._finish_wait_timed_out,
+            "status_counts": self._status_counts,
+            "audio_state": {
+                "raw_bytes": self._audio_state.get("raw_bytes"),
+                "packets": self._audio_state.get("packets"),
+                "frames": self._audio_state.get("frames"),
+                "samples_pushed": self._audio_state.get("samples_pushed"),
+                "flush_frames": self._audio_state.get("flush_frames"),
+                "residual_samples": self._audio_state.get("samples", np.zeros(0)).shape[0],
+                "residual_bytes": len(self._audio_state.get("bytes", b"")),
+            },
+        }
 
     def _recv_loop(self) -> None:
         try:
@@ -1121,6 +1284,7 @@ class GonganTTSStream:
                 raw = self._ws.recv()
                 if not raw:
                     break
+                self._recv_messages += 1
                 try:
                     data = json.loads(raw)
                 except Exception:
@@ -1128,14 +1292,42 @@ class GonganTTSStream:
                     continue
 
                 status = data.get("status")
+                self._status_counts[str(status)] = self._status_counts.get(str(status), 0) + 1
                 if status in (1, "1") and data.get("audio"):
+                    audio_raw = base64.b64decode(data["audio"])
+                    self._audio_packets += 1
+                    self._audio_bytes += len(audio_raw)
                     self._owner._mark_tts_first_audio_packet(data["audio"])
                     self._owner._push_raw_pcm(
-                        base64.b64decode(data["audio"]),
+                        audio_raw,
                         self._audio_state,
                     )
+                    if self._audio_packets <= 5 or self._audio_packets % 50 == 0:
+                        log_perf(
+                            "tts",
+                            "stream_audio_packet",
+                            trace_id=self._owner._current_trace_fields().get("trace_id"),
+                            stream_id=self._stream_id,
+                            packet_index=self._audio_packets,
+                            packet_bytes=len(audio_raw),
+                            total_audio_bytes=self._audio_bytes,
+                            frames_pushed=self._audio_state.get("frames", 0),
+                            residual_samples=self._audio_state.get("samples", np.zeros(0)).shape[0],
+                        )
                 elif status in (2, "2"):
+                    self._owner._flush_audio_state(self._audio_state)
                     self._segments_done += 1
+                    self._segment_done.set()
+                    log_perf(
+                        "tts",
+                        "stream_segment_done",
+                        trace_id=self._owner._current_trace_fields().get("trace_id"),
+                        stream_id=self._stream_id,
+                        segments_done=self._segments_done,
+                        segments_sent=self._segments_sent,
+                        audio_packets=self._audio_packets,
+                        frames_pushed=self._audio_state.get("frames", 0),
+                    )
                     if self._end_sent and self._segments_done >= self._segments_sent:
                         self._done.set()
                         break
@@ -1146,6 +1338,25 @@ class GonganTTSStream:
                 logger.warning(f"GonganTTS stream recv error: {exc}")
         finally:
             self._owner._flush_audio_state(self._audio_state)
+            for _ in range(self._owner._trailing_frames):
+                if self._owner.state == State.RUNNING:
+                    self._owner.parent.put_audio_frame(np.zeros(self._owner.chunk, dtype=np.float32))
+
+            log_perf(
+                "tts",
+                "stream_recv_done",
+                elapsed_ms(self._created_at),
+                trace_id=self._owner._current_trace_fields().get("trace_id"),
+                stream_id=self._stream_id,
+                segments_sent=self._segments_sent,
+                segments_done=self._segments_done,
+                recv_messages=self._recv_messages,
+                audio_packets=self._audio_packets,
+                audio_bytes=self._audio_bytes,
+                frames_pushed=self._audio_state.get("frames", 0),
+                flushed_frames=self._audio_state.get("flush_frames", 0),
+                status_counts=self._status_counts,
+            )
             self._done.set()
             self.close()
 
@@ -1157,17 +1368,51 @@ class GonganTTS(BaseTTS):
 
         self._client = get_gongan_client()
         self._spk_id = int(os.environ.get("GONGAN_TTS_SPK_ID", "0"))
-        self._source_sample_rate = int(os.environ.get("GONGAN_TTS_SAMPLE_RATE", "24000"))
+        self._source_sample_rate = int(
+            os.environ.get(
+                "GONGAN_TTS_SOURCE_SAMPLE_RATE",
+                os.environ.get("GONGAN_TTS_SAMPLE_RATE", "16000"),
+            )
+        )
         self._finish_timeout = env_float("GONGAN_TTS_FINISH_TIMEOUT", 20.0)
+        self._segment_timeout = env_float("GONGAN_TTS_SEGMENT_TIMEOUT", 20.0)
         self._ws_timeout = env_float("GONGAN_TTS_WS_TIMEOUT", 60.0)
+        self._trailing_frames = int(os.environ.get("GONGAN_TTS_TRAILING_FRAMES", "15"))
+        self._leading_frames = int(os.environ.get("GONGAN_TTS_LEADING_FRAMES", "5"))
+        self._min_segment_len = int(os.environ.get("GONGAN_TTS_MIN_SEGMENT_LEN", "12"))
+        self._max_segment_len = int(os.environ.get("GONGAN_TTS_MAX_SEGMENT_LEN", "80"))
         self._active_stream = None
         self._active_lock = Lock()
         self._tts_ts_lock = Lock()
         self._reset_tts_timestamps()
         logger.info(
             f"GonganTTS config: spk_id={self._spk_id}, "
-            f"sample_rate={self._source_sample_rate}"
+            f"sample_rate={self._source_sample_rate}, "
+            f"target_sample_rate={self.sample_rate}, "
+            f"segment_len={self._min_segment_len}-{self._max_segment_len}, "
+            f"trailing_frames={self._trailing_frames}, "
+            f"leading_frames={self._leading_frames}"
         )
+
+    def _split_tts_text(self, text: str) -> list[str]:
+        text = re.sub(r"\s+", " ", (text or "").strip())
+        if not text:
+            return []
+
+        max_len = max(8, self._max_segment_len)
+        min_len = max(1, min(self._min_segment_len, max_len))
+        segments = []
+        buf = ""
+        for char in text:
+            buf += char
+            if len(buf) < min_len:
+                continue
+            if re.match(r"[，。！？：；、,.!?;:]", char) or len(buf) >= max_len:
+                segments.append(buf.strip())
+                buf = ""
+        if buf.strip():
+            segments.append(buf.strip())
+        return segments
 
     def flush_talk(self):
         super().flush_talk()
@@ -1194,26 +1439,64 @@ class GonganTTS(BaseTTS):
             if self._active_stream is stream:
                 self._active_stream = None
 
+    def diagnostics(self):
+        with self._active_lock:
+            stream = self._active_stream
+        return {
+            "state": self.state.name,
+            "spk_id": self._spk_id,
+            "source_sample_rate": self._source_sample_rate,
+            "target_sample_rate": self.sample_rate,
+            "finish_timeout_s": self._finish_timeout,
+            "ws_timeout_s": self._ws_timeout,
+            "active_stream": stream.diagnostics() if stream else None,
+            "trace": self._current_trace_fields(),
+        }
+
     def _connect_ws(self):
+        connect_start = now()
         self._client.ensure_login()
-        return websocket.create_connection(
+        ws = websocket.create_connection(
             self._client.tokenized_url(self._client.tts_ws_url),
             header=self._client.websocket_header_list(),
             cookie=self._client.cookie_header(),
             origin=self._client.origin,
             timeout=self._ws_timeout,
         )
+        log_perf(
+            "tts",
+            "connect_ws",
+            elapsed_ms(connect_start),
+            trace_id=self._current_trace_fields().get("trace_id"),
+            tts_provider="gongan",
+            ws_timeout_s=self._ws_timeout,
+        )
+        return ws
+
+    def _current_trace_fields(self):
+        return {
+            "trace_id": getattr(self.parent, "_active_tts_trace_id", None),
+            "segment_index": getattr(self.parent, "_active_tts_segment_index", None),
+        }
 
     def _new_audio_state(self):
         return {
             "bytes": b"",
             "samples": np.zeros(0, dtype=np.float32),
+            "raw_bytes": 0,
+            "packets": 0,
+            "frames": 0,
+            "samples_pushed": 0,
+            "flush_frames": 0,
+            "resample_ms": 0.0,
         }
 
     def _push_raw_pcm(self, raw: bytes, state) -> None:
         if not raw or self.state != State.RUNNING:
             return
 
+        state["raw_bytes"] += len(raw)
+        state["packets"] += 1
         raw = state["bytes"] + raw
         even_len = len(raw) - (len(raw) % 2)
         if even_len <= 0:
@@ -1223,11 +1506,13 @@ class GonganTTS(BaseTTS):
         state["bytes"] = raw[even_len:]
         samples = np.frombuffer(raw[:even_len], dtype=np.int16).astype(np.float32) / 32767.0
         if self._source_sample_rate != self.sample_rate and samples.shape[0] > 0:
+            resample_start = now()
             samples = resampy.resample(
                 x=samples,
                 sr_orig=self._source_sample_rate,
                 sr_new=self.sample_rate,
             ).astype(np.float32)
+            state["resample_ms"] += elapsed_ms(resample_start)
 
         if state["samples"].shape[0] > 0:
             samples = np.concatenate([state["samples"], samples])
@@ -1239,22 +1524,55 @@ class GonganTTS(BaseTTS):
             self.parent.put_audio_frame(samples[idx: idx + self.chunk])
             idx += self.chunk
             frames += 1
+            state["frames"] += 1
+            state["samples_pushed"] += self.chunk
         state["samples"] = samples[idx:]
         if frames:
-            logger.debug(f"GonganTTS pushed {frames} audio frames")
+            trace_fields = self._current_trace_fields()
+            logger.debug(
+                f"GonganTTS pushed {frames} audio frames "
+                f"trace_id={trace_fields.get('trace_id')} "
+                f"segment_index={trace_fields.get('segment_index')} "
+                f"total_frames={state['frames']} residual_samples={state['samples'].shape[0]} "
+                f"raw_bytes={state['raw_bytes']}"
+            )
 
     def _flush_audio_state(self, state) -> None:
         remain = state["samples"]
+        trace_fields = self._current_trace_fields()
         if remain.shape[0] > 0 and self.state == State.RUNNING:
             frame = np.zeros(self.chunk, dtype=np.float32)
             frame[: min(remain.shape[0], self.chunk)] = remain[: self.chunk]
             self._mark_tts_first_audio_frame()
             self.parent.put_audio_frame(frame)
+            state["frames"] += 1
+            state["flush_frames"] += 1
+            state["samples_pushed"] += self.chunk
+        log_perf(
+            "tts",
+            "pcm_flush",
+            trace_id=trace_fields.get("trace_id"),
+            segment_index=trace_fields.get("segment_index"),
+            raw_bytes=state.get("raw_bytes"),
+            packets=state.get("packets"),
+            frames=state.get("frames"),
+            flush_frames=state.get("flush_frames"),
+            samples_pushed=state.get("samples_pushed"),
+            audio_duration_ms=f"{state.get('samples_pushed', 0) / self.sample_rate * 1000:.2f}",
+            residual_samples=remain.shape[0],
+            residual_bytes=len(state.get("bytes", b"")),
+            resample_ms=f"{state.get('resample_ms', 0.0):.2f}",
+            state=self.state.name,
+        )
         state["bytes"] = b""
         state["samples"] = np.zeros(0, dtype=np.float32)
 
     def _iter_tts_once(self, text: str):
         ws = None
+        packets = 0
+        audio_bytes = 0
+        recv_messages = 0
+        start = now()
         try:
             ws = self._connect_ws()
             ws.send(json.dumps({"signal": "start"}, ensure_ascii=False))
@@ -1267,24 +1585,67 @@ class GonganTTS(BaseTTS):
                 )
             )
             ws.send(json.dumps({"signal": "end"}, ensure_ascii=False))
-            logger.info(f"GonganTTS one-shot started, len={len(text)}")
+            logger.info(
+                f"GonganTTS one-shot started trace_id={self._current_trace_fields().get('trace_id')} "
+                f"segment_index={self._current_trace_fields().get('segment_index')} len={len(text)}"
+            )
+            log_perf(
+                "tts",
+                "one_shot_request_sent",
+                trace_id=self._current_trace_fields().get("trace_id"),
+                segment_index=self._current_trace_fields().get("segment_index"),
+                text_len=len(text),
+            )
 
             while True:
                 raw = ws.recv()
                 if not raw:
                     break
+                recv_messages += 1
                 data = json.loads(raw)
                 status = data.get("status")
                 if status in (1, "1") and data.get("audio"):
                     self._mark_tts_first_audio_packet(data["audio"])
-                    yield base64.b64decode(data["audio"])
+                    audio_raw = base64.b64decode(data["audio"])
+                    packets += 1
+                    audio_bytes += len(audio_raw)
+                    if packets <= 5 or packets % 50 == 0:
+                        log_perf(
+                            "tts",
+                            "one_shot_audio_packet",
+                            trace_id=self._current_trace_fields().get("trace_id"),
+                            segment_index=self._current_trace_fields().get("segment_index"),
+                            packet_index=packets,
+                            packet_bytes=len(audio_raw),
+                            total_audio_bytes=audio_bytes,
+                        )
+                    yield audio_raw
                 elif status in (2, "2"):
+                    log_perf(
+                        "tts",
+                        "one_shot_status_done",
+                        trace_id=self._current_trace_fields().get("trace_id"),
+                        segment_index=self._current_trace_fields().get("segment_index"),
+                        packets=packets,
+                        audio_bytes=audio_bytes,
+                        recv_messages=recv_messages,
+                    )
                     break
                 elif data.get("success") is False or data.get("code"):
                     logger.warning(f"GonganTTS warning: {str(data)[:200]}")
         except Exception as exc:
             logger.error(f"GonganTTS error: {exc}")
         finally:
+            log_perf(
+                "tts",
+                "one_shot_recv_done",
+                elapsed_ms(start),
+                trace_id=self._current_trace_fields().get("trace_id"),
+                segment_index=self._current_trace_fields().get("segment_index"),
+                packets=packets,
+                audio_bytes=audio_bytes,
+                recv_messages=recv_messages,
+            )
             try:
                 if ws is not None:
                     ws.close()
@@ -1297,11 +1658,59 @@ class GonganTTS(BaseTTS):
         self.state = State.RUNNING
         self._reset_tts_timestamps()
         start = time.perf_counter()
-        state = self._new_audio_state()
-        for chunk in self._iter_tts_once(msg):
-            self._push_raw_pcm(chunk, state)
-        self._flush_audio_state(state)
-        logger.info(f"GonganTTS total time: {time.perf_counter() - start:.3f}s")
+        log_timepoint(
+            "TTS",
+            "one-shot合成开始",
+            trace_id=self._current_trace_fields().get("trace_id"),
+            segment_index=self._current_trace_fields().get("segment_index"),
+            text_len=len(msg),
+        )
+        # 添加前置静音垫高，防止播放器初始连接或者解码关键帧时吃掉开头的几个字
+        for _ in range(self._leading_frames):
+            if self.state == State.RUNNING:
+                self.parent.put_audio_frame(np.zeros(self.chunk, dtype=np.float32))
+
+        total_state = self._new_audio_state()
+        segment_count = 0
+        for segment in self._split_tts_text(msg):
+            segment_count += 1
+            segment_state = self._new_audio_state()
+            log_perf(
+                "tts",
+                "one_shot_segment_start",
+                trace_id=self._current_trace_fields().get("trace_id"),
+                segment_index=segment_count,
+                text_len=len(segment),
+            )
+            for chunk in self._iter_tts_once(segment):
+                self._push_raw_pcm(chunk, segment_state)
+            self._flush_audio_state(segment_state)
+            for key in ("raw_bytes", "packets", "frames", "samples_pushed", "flush_frames"):
+                total_state[key] += segment_state.get(key, 0)
+            total_state["resample_ms"] += segment_state.get("resample_ms", 0.0)
+
+        for _ in range(self._trailing_frames):
+            if self.state == State.RUNNING:
+                self.parent.put_audio_frame(np.zeros(self.chunk, dtype=np.float32))
+
+        total_ms = (time.perf_counter() - start) * 1000
+        logger.info(
+            f"GonganTTS total time trace_id={self._current_trace_fields().get('trace_id')}: "
+            f"{total_ms / 1000:.3f}s"
+        )
+        log_perf(
+            "tts",
+            "one_shot_total",
+            total_ms,
+            trace_id=self._current_trace_fields().get("trace_id"),
+            segment_index=self._current_trace_fields().get("segment_index"),
+            text_len=len(msg),
+            text_segments=segment_count,
+            packets=total_state.get("packets"),
+            raw_bytes=total_state.get("raw_bytes"),
+            frames=total_state.get("frames"),
+            audio_duration_ms=f"{total_state.get('samples_pushed', 0) / self.sample_rate * 1000:.2f}",
+        )
 
     def _reset_tts_timestamps(self) -> None:
         with self._tts_ts_lock:
@@ -1313,7 +1722,12 @@ class GonganTTS(BaseTTS):
     def _mark_tts_stream_start(self) -> None:
         wall = time.time()
         mono = time.perf_counter()
-        logger.info(f"[TS] tts.stream_start wall={wall:.6f} mono={mono:.6f}")
+        trace_fields = self._current_trace_fields()
+        logger.info(
+            f"[TS] tts.stream_start trace_id={trace_fields.get('trace_id')} "
+            f"segment_index={trace_fields.get('segment_index')} "
+            f"wall={wall:.6f} mono={mono:.6f}"
+        )
 
     def _mark_tts_first_text(self, text: str) -> None:
         with self._tts_ts_lock:
@@ -1323,9 +1737,18 @@ class GonganTTS(BaseTTS):
             wall = time.time()
             mono = time.perf_counter()
             self._tts_first_text_mono = mono
+        trace_fields = self._current_trace_fields()
         logger.info(
-            f"[TS] tts.first_text_segment len={len(text)} "
+            f"[TS] tts.first_text_segment trace_id={trace_fields.get('trace_id')} "
+            f"segment_index={trace_fields.get('segment_index')} len={len(text)} "
             f"wall={wall:.6f} mono={mono:.6f}"
+        )
+        log_timepoint(
+            "TTS",
+            "首段文本送入TTS服务",
+            trace_id=trace_fields.get("trace_id"),
+            segment_index=trace_fields.get("segment_index"),
+            text_len=len(text),
         )
 
     def _mark_tts_first_audio_packet(self, audio_payload: str) -> None:
@@ -1337,9 +1760,19 @@ class GonganTTS(BaseTTS):
             mono = time.perf_counter()
             first_text_mono = self._tts_first_text_mono
         latency = mono - first_text_mono if first_text_mono is not None else -1.0
+        trace_fields = self._current_trace_fields()
         logger.info(
-            f"[TS] tts.first_audio_packet payload_chars={len(audio_payload)} "
+            f"[TS] tts.first_audio_packet trace_id={trace_fields.get('trace_id')} "
+            f"segment_index={trace_fields.get('segment_index')} payload_chars={len(audio_payload)} "
             f"latency_from_text={latency:.6f}s wall={wall:.6f} mono={mono:.6f}"
+        )
+        log_perf(
+            "trace",
+            "tts_first_audio_packet",
+            latency * 1000 if latency >= 0 else None,
+            trace_id=trace_fields.get("trace_id"),
+            segment_index=trace_fields.get("segment_index"),
+            payload_chars=len(audio_payload),
         )
 
     def _mark_tts_first_audio_frame(self) -> None:
@@ -1351,14 +1784,19 @@ class GonganTTS(BaseTTS):
             mono = time.perf_counter()
             first_text_mono = self._tts_first_text_mono
         latency = mono - first_text_mono if first_text_mono is not None else -1.0
+        trace_fields = self._current_trace_fields()
         logger.info(
-            f"[TS] tts.first_audio_frame_pushed "
+            f"[TS] tts.first_audio_frame_pushed trace_id={trace_fields.get('trace_id')} "
+            f"segment_index={trace_fields.get('segment_index')} "
             f"latency_from_text={latency:.6f}s wall={wall:.6f} mono={mono:.6f}"
         )
-
-
-class GywtTTS(GonganTTS):
-    """Compatibility alias for server basereal.py versions that import GywtTTS."""
+        log_perf(
+            "trace",
+            "tts_first_audio_frame",
+            latency * 1000 if latency >= 0 else None,
+            trace_id=trace_fields.get("trace_id"),
+            segment_index=trace_fields.get("segment_index"),
+        )
 
 
 class FlashTTS(BaseTTS):

@@ -3,7 +3,7 @@ import requests
 
 
 def main():
-    base_url = "http://your-server-host:8085"
+    base_url = "http://backend.example.internal:8085"
     video_url = "https://oss.minio.ratuads.com:8143/laboratory/file/2940d3f1-eed6-4c77-a2fa-5edfad62151a.mp4"
 
     submit_url = f"{base_url}/v1/process_video_url"
@@ -19,7 +19,7 @@ def main():
     # 轮询检查任务状态
     status_url = f"{base_url}/v1/check_status/{task_id}"
     polling_counter = 0
-    max_polling = 100 
+    max_polling = 100
 
     while polling_counter < max_polling:
         time.sleep(5)

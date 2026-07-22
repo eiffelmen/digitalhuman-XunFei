@@ -1,205 +1,633 @@
+import asyncio
 import json
+import os
+import queue
+import re
 import time
 import uuid
-import asyncio
 from datetime import datetime
+from threading import Event, Thread
+from typing import Callable, Optional
 
 from loguru import logger
-from openai import OpenAI
-from dotenv import load_dotenv
+
 from basereal import BaseReal
-import os
-
-# 加载环境变量
-load_dotenv()
-
-BASE_URL = os.environ.get("BASE_URL")
-API_KEY = os.environ.get("API_KEY")
-MODEL_NAME = os.environ.get("MODEL_NAME")
-
-SYSTEM_PROMPT = f"""你是一位名为"晓云警官"的专业AI助手，由连云港市公安局开发，今天是{datetime.now().strftime('%Y年%-m月%-d日')}。
-You are a professional AI assistant named "Officer Xiaoyun", developed by the Lianyungang Public Security Bureau. Today is {datetime.now().strftime('%B %-d, %Y')}.
-
-**核心能力**:
-- 知识覆盖至2025年7月7日
-- 提供准确、权威且实用的信息
-- 响应速度快，处理效率高
-
-**Core Competencies**:
-- Knowledge coverage up to July 7, 2025
-- Provide accurate, authoritative, and practical information
-- Fast response and high processing efficiency
-
-**交互规范**:
-1. **语言模式**：
-   - 默认使用标准中文普通话
-   - 根据用户提问语言自动切换(中/英)
-
-2. **回答要求**：
-   - 内容必须专业、完整且直接解决问题
-   - 避免简单确认语句("好的"、"是的"等)
-   - 禁用非正式表达和表情符号
-   - 禁止添加"请注意"、"需要说明的是"等解释性语句
-
-3. **输出控制**：
-   - 简明扼要，单次回答不超过 80 字
-   - 复杂问题可分点说明
-   - 确保信息准确性和时效性
-   - 对输出内容进行总结，需突出重点
-
-**Interaction Guidelines**:
-1. **Language Mode**:
-   - Default to standard Mandarin Chinese
-   - Automatically switch based on user's question language (Chinese/English)
-
-2. **Response Requirements**:
-   - Content must be professional, comprehensive, and directly address the issue
-   - Avoid simple confirmation statements ("OK", "Yes", etc.)
-   - Prohibit informal expressions and emojis
-   - Do not add explanatory phrases like "Please note", "It should be noted" etc.
-
-3. **Output Control**:
-   - Be concise, with single responses not exceeding 80 words
-   - Present complex issues in points
-   - Ensure information accuracy and timeliness
-   - Summarize output content, highlighting key points
-
-**注意事项**：
-- 对任何问题都需提供实质性帮助
-- 不确定的内容明确说明
-- 涉及隐私或敏感话题时礼貌拒绝
-- 不需要总结内容
-
-**Notes**:
-- Provide substantial assistance for all questions
-- Clearly state uncertain information
-- Politely decline when privacy or sensitive topics are involved
-- Summaries must be faithful to the original response without adding new information
-
-请严格遵循上述规范，为用户提供高质量的专业服务。
-Please strictly follow the above guidelines to provide high - quality professional services to users."""
-
-conversation_histories = {}
+from gongan_api import env_bool, env_float, get_gongan_client
+from perf_logger import elapsed_ms, log_perf, log_timepoint, now
 
 
-def get_history(sessionid):
-    """获取或创建指定会话的历史记录"""
-    if sessionid not in conversation_histories:
-        conversation_histories[sessionid] = [{
-            "role": "system",
-            "content": SYSTEM_PROMPT,
-        }]
-    return conversation_histories[sessionid]
+PUNCTUATION_RE = re.compile(r"[，。！？：；、,.!?;:\n]")
 
 
-# 创建同步OpenAI客户端
-client = OpenAI(
-    api_key=API_KEY,
-    base_url=BASE_URL,
-)
+def _find_last_punct(text: str) -> int:
+    last_punct = -1
+    for mark in "，。！？：；、,.!?;:\n":
+        pos = text.rfind(mark)
+        if pos > last_punct:
+            last_punct = pos
+    return last_punct
 
 
-def llm_response(message: str, nerfreal: BaseReal, sessionid: str, result_queue: asyncio.Queue) -> str:
-    """
-    公安LLM响应方法 - 基于OpenAI客户端重新实现
+def _clean_chunk(text: str) -> str:
+    text = re.sub(r"<[^>]+>", "", text or "")
+    return text.translate(str.maketrans("", "", "*#-")).strip()
 
-    Args:
-        message: 用户输入消息
-        nerfreal: 数字人实例
-        sessionid: WebSocket会话ID
-        result_queue: 异步队列，用于主线程发送WebSocket消息
 
-    Returns:
-        str: 完整的响应文本
-    """
+def _build_query(message: str) -> str:
+    instruction = os.environ.get(
+        "GONGAN_REPLY_INSTRUCTION",
+        "请用简洁、口语化中文回答，控制在80字以内，适合数字人口播。不要输出思考过程。",
+    ).strip()
+    if not instruction:
+        return message
+    return f"{instruction}\n用户问题：{message}"
 
-    start_time = time.perf_counter()
-    first_token_received = False
-    msg_id = str(uuid.uuid4())  # 生成消息ID
 
+def _extract_answer(data) -> str:
+    if not isinstance(data, dict):
+        return ""
+    if "answer" in data:
+        answer = data.get("answer")
+        return answer if isinstance(answer, str) else ""
+    nested = data.get("data")
+    if isinstance(nested, dict):
+        answer = nested.get("answer") or nested.get("content")
+        return answer if isinstance(answer, str) else ""
+    content = data.get("content")
+    return content if isinstance(content, str) else ""
+
+
+def _use_agent_chat() -> bool:
+    default_enabled = bool(
+        os.environ.get("GONGAN_API_TOKEN")
+        or os.environ.get("API_KEY")
+        or os.environ.get("GONGAN_AGENT_FRIEND_ID")
+        or os.environ.get("GONGAN_AGENT_ID")
+    )
+    return env_bool("GONGAN_AGENT_ENABLED", default_enabled)
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
     try:
-        # 获取会话历史
-        history_sessionid = "0"  # 默认会话ID
-        history = get_history(history_sessionid)
-        history.append({
-            "role": "user",
-            "content": message,
-        })
+        return max(minimum, int(value))
+    except ValueError:
+        logger.warning(f"Invalid {name}={value!r}; using {default}")
+        return default
 
-        # 使用OpenAI客户端进行流式请求
-        response = client.chat.completions.create(
-            messages=[history[0]] + history[1:][-9:],  # system和除system的最近9条对话
-            model=MODEL_NAME,
-            temperature=0,
-            stream=True,
-            # 通过以下设置，在流式输出的最后一行展示token使用信息
-            stream_options={"include_usage": True}
+
+def _trim_history(history: list[dict], max_chars: int) -> list[dict]:
+    if max_chars <= 0:
+        return history
+    trimmed: list[dict] = []
+    total = 0
+    for item in reversed(history):
+        content = item.get("content") or ""
+        if not content:
+            continue
+        if total + len(content) > max_chars and trimmed:
+            break
+        trimmed.append(item)
+        total += len(content)
+    return list(reversed(trimmed))
+
+
+def _fetch_agent_history(client, friend_id: str, trace_id: Optional[str] = None) -> list[dict]:
+    if not friend_id or not env_bool("GONGAN_AGENT_HISTORY_ENABLED", True):
+        return []
+
+    rows = _env_int("GONGAN_AGENT_HISTORY_ROWS", 1, minimum=0)
+    if rows <= 0:
+        return []
+
+    max_chars = _env_int("GONGAN_AGENT_HISTORY_MAX_CHARS", 2000, minimum=0)
+    timeout = env_float("GONGAN_AGENT_HISTORY_TIMEOUT", min(client.timeout, 3.0))
+    payload = {
+        "askEndTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "friendId": friend_id,
+        "page": 1,
+        "row": rows,
+    }
+    start = now()
+    try:
+        response = client.session.post(
+            f"{client.base_url}/agentService/agentChat/getChatInfo",
+            json=payload,
+            headers=client.token_header(),
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if data.get("status") != "success":
+            logger.warning(
+                f"Gongan agent history query failed trace_id={trace_id}: {data}"
+            )
+            return []
+
+        result = data.get("result", {})
+        items = result.get("items") if isinstance(result, dict) else result
+        if not isinstance(items, list):
+            return []
+
+        items = [item for item in items if isinstance(item, dict)]
+        items = sorted(items, key=lambda item: item.get("createTime", ""))
+        history: list[dict] = []
+        for item in items:
+            ask = (item.get("ask") or "").strip()
+            reply = (item.get("reply") or "").strip()
+            if ask:
+                history.append({"role": "user", "content": ask})
+            if reply:
+                history.append({"role": "assistant", "content": reply})
+
+        history = _trim_history(history, max_chars)
+        logger.info(
+            f"Gongan agent history loaded trace_id={trace_id}, "
+            f"rows={rows}, messages={len(history)}, chars={sum(len(i['content']) for i in history)}"
+        )
+        log_perf(
+            "llm",
+            "agent_history_loaded",
+            elapsed_ms(start),
+            trace_id=trace_id,
+            rows=rows,
+            messages=len(history),
+            chars=sum(len(i["content"]) for i in history),
+        )
+        return history
+    except Exception as exc:
+        logger.warning(f"Gongan agent history unavailable trace_id={trace_id}: {exc}")
+        return []
+
+
+def _build_agent_payload(message: str, model_id: str, client=None, trace_id: Optional[str] = None) -> dict:
+    friend_id = os.environ.get("GONGAN_AGENT_FRIEND_ID", "").strip()
+    agent_id = os.environ.get("GONGAN_AGENT_ID", "").strip()
+    if not friend_id and not agent_id:
+        raise RuntimeError(
+            "Gongan agent chat requires GONGAN_AGENT_FRIEND_ID or GONGAN_AGENT_ID."
         )
 
-        buffer = []
-        complete_response = []
+    payload = {
+        "modelId": model_id,
+        "history": _fetch_agent_history(client, friend_id, trace_id) if client else [],
+        "query": _build_query(message),
+        "stream": True,
+        "startFlag": 0,
+        "useTmp": 0,
+        "exact_match": env_bool("GONGAN_AGENT_EXACT_MATCH", False),
+        "file_names": [],
+        "isBoot": os.environ.get("GONGAN_AGENT_IS_BOOT", "1"),
+    }
+    if friend_id:
+        payload["friendId"] = friend_id
+    else:
+        payload["agentId"] = agent_id
 
-        logger.info("开始接收公安LLM流式响应")
+    process_id = os.environ.get("GONGAN_AGENT_PROCESS_ID", "").strip()
+    if process_id:
+        # The upstream document spells this field as "prrocessId".
+        payload["prrocessId"] = process_id
+    return payload
 
-        # 处理流式响应
-        for chunk_response in response:
-            if not chunk_response.choices:
+
+def _make_tts_sender(
+    nerfreal: BaseReal,
+    trace_id: Optional[str] = None,
+) -> tuple[Callable[[str], None], Callable[[], None]]:
+    tts = getattr(nerfreal, "tts", None)
+    can_direct_tts = bool(
+        env_bool("GONGAN_DIRECT_TTS", True)
+        and hasattr(tts, "start_text_stream")
+    )
+    direct_queue: queue.Queue[tuple[int, str] | None] = queue.Queue()
+    direct_done = Event()
+    segment_index = 0
+
+    def _is_active() -> bool:
+        is_active = getattr(nerfreal, "is_active_chat_trace", None)
+        return not (trace_id and callable(is_active) and not is_active(trace_id))
+
+    def _clear_active_tts_trace() -> None:
+        if hasattr(nerfreal, "clear_active_tts_trace"):
+            nerfreal.clear_active_tts_trace()
+
+    def _fallback_to_queue(clean_text: str, index: int) -> None:
+        nerfreal.put_msg_txt(
+            clean_text,
+            trace_id=trace_id,
+            segment_index=index,
+        )
+
+    def _direct_text_parts(clean_text: str) -> list[str]:
+        splitter = getattr(tts, "_split_tts_text", None)
+        if not callable(splitter):
+            return [clean_text]
+        try:
+            parts = [part for part in splitter(clean_text) if part.strip()]
+            return parts or [clean_text]
+        except Exception as exc:
+            logger.warning(
+                f"Gongan direct TTS split failed trace_id={trace_id}, "
+                f"len={len(clean_text)}: {exc}"
+            )
+            return [clean_text]
+
+    def _run_direct_tts_segments() -> None:
+        try:
+            while True:
+                item = direct_queue.get()
+                if item is None:
+                    return
+                index, clean_text = item
+                if not _is_active():
+                    logger.info(
+                        f"Skip stale direct Gongan TTS segment trace_id={trace_id}, "
+                        f"segment_index={index}, len={len(clean_text)}"
+                    )
+                    continue
+
+                parts = _direct_text_parts(clean_text)
+                for part_index, part_text in enumerate(parts, start=1):
+                    if not _is_active():
+                        break
+                    stream = None
+                    try:
+                        if hasattr(nerfreal, "set_active_tts_trace"):
+                            nerfreal.set_active_tts_trace(trace_id, index)
+                        stream_start = now()
+                        stream = tts.start_text_stream()
+                        logger.info(
+                            f"Gongan LLM direct TTS segment stream started "
+                            f"trace_id={trace_id}, segment_index={index}, "
+                            f"part_index={part_index}/{len(parts)}, len={len(part_text)}"
+                        )
+                        log_perf(
+                            "tts",
+                            "direct_stream_start",
+                            elapsed_ms(stream_start),
+                            trace_id=trace_id,
+                            segment_index=index,
+                            part_index=part_index,
+                            part_count=len(parts),
+                            direct_tts=True,
+                            per_segment=True,
+                        )
+                        stream.send_text(part_text)
+                        stream.finish()
+                        diagnostics = (
+                            stream.diagnostics()
+                            if hasattr(stream, "diagnostics")
+                            else {}
+                        )
+                        log_perf(
+                            "tts",
+                            "direct_segment_stream_done",
+                            trace_id=trace_id,
+                            segment_index=index,
+                            part_index=part_index,
+                            part_count=len(parts),
+                            text_len=len(part_text),
+                            segments_sent=diagnostics.get("segments_sent"),
+                            segments_done=diagnostics.get("segments_done"),
+                            audio_packets=diagnostics.get("audio_packets"),
+                            audio_bytes=diagnostics.get("audio_bytes"),
+                            finish_wait_timed_out=diagnostics.get("finish_wait_timed_out"),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            f"Gongan direct TTS segment failed, fallback to queue "
+                            f"trace_id={trace_id}, segment_index={index}, "
+                            f"part_index={part_index}: {exc}"
+                        )
+                        try:
+                            if stream is not None and hasattr(stream, "abort"):
+                                stream.abort()
+                        except Exception:
+                            pass
+                        _fallback_to_queue(part_text, index)
+                    finally:
+                        _clear_active_tts_trace()
+        finally:
+            direct_done.set()
+
+    worker = None
+    if can_direct_tts:
+        worker = Thread(
+            target=_run_direct_tts_segments,
+            name=f"gongan-tts-{trace_id or 'stream'}",
+            daemon=True,
+        )
+        worker.start()
+
+    def send(text: str) -> None:
+        nonlocal segment_index
+        clean_text = text.strip()
+        if not clean_text:
+            return
+        segment_index += 1
+        if not _is_active():
+            logger.info(
+                f"Skip stale Gongan TTS segment trace_id={trace_id}, "
+                f"segment_index={segment_index}, len={len(clean_text)}"
+            )
+            return
+        log_timepoint(
+            "TTS",
+            "LLM文本段进入TTS",
+            trace_id=trace_id,
+            segment_index=segment_index,
+            text_len=len(clean_text),
+            direct_tts=can_direct_tts,
+            first_char=clean_text[:1],
+        )
+        log_perf(
+            "trace",
+            "tts_segment_dispatch",
+            trace_id=trace_id,
+            segment_index=segment_index,
+            text_len=len(clean_text),
+            direct_tts=can_direct_tts,
+        )
+        if can_direct_tts and worker is not None and not direct_done.is_set():
+            direct_queue.put((segment_index, clean_text))
+        else:
+            _fallback_to_queue(clean_text, segment_index)
+
+    def finish() -> None:
+        if can_direct_tts and worker is not None:
+            direct_queue.put(None)
+            finish_timeout = float(
+                getattr(tts, "_finish_timeout", env_float("GONGAN_TTS_FINISH_TIMEOUT", 20.0))
+            )
+            segment_timeout = float(
+                getattr(tts, "_segment_timeout", env_float("GONGAN_TTS_SEGMENT_TIMEOUT", 20.0))
+            )
+            timeout = max(5.0, (finish_timeout + segment_timeout + 2.0) * max(1, segment_index))
+            if not direct_done.wait(timeout=timeout):
+                logger.warning(
+                    f"Gongan direct TTS worker finish timed out trace_id={trace_id}, "
+                    f"segments={segment_index}, timeout={timeout:.1f}s"
+                )
+        _clear_active_tts_trace()
+
+    return send, finish
+
+
+def llm_response(
+    message: str,
+    nerfreal: BaseReal,
+    sessionid: str,
+    result_queue: asyncio.Queue,
+    trace_id: Optional[str] = None,
+) -> str:
+    start_time = time.perf_counter()
+    first_token_received = False
+    msg_id = trace_id or str(uuid.uuid4())
+    trace_id = msg_id
+    client = get_gongan_client()
+    complete_response: list[str] = []
+    tts_buffer = ""
+    chunk_count = 0
+    tts_segments_queued = 0
+    response = None
+    min_segment_len = int(os.environ.get("GONGAN_TTS_MIN_SEGMENT_LEN", "12"))
+    max_segment_len = int(os.environ.get("GONGAN_TTS_MAX_SEGMENT_LEN", "80"))
+    read_timeout = env_float("GONGAN_LLM_READ_TIMEOUT", 60.0)
+    send_tts, finish_tts = _make_tts_sender(nerfreal, trace_id=trace_id)
+
+    def queue_tts(text: str) -> None:
+        nonlocal tts_segments_queued
+        tts_segments_queued += 1
+        logger.info(
+            f"Gongan TTS segment queued trace_id={msg_id}, "
+            f"segment_index={tts_segments_queued}, text={text[:30]!r}, len={len(text)}"
+        )
+        log_perf(
+            "llm",
+            "queue_tts_segment",
+            trace_id=msg_id,
+            segment_index=tts_segments_queued,
+            text_len=len(text),
+            total_answer_len=sum(len(part) for part in complete_response),
+        )
+        send_tts(text)
+
+    try:
+        use_agent = _use_agent_chat()
+        if use_agent:
+            client.ensure_login()
+            url = f"{client.base_url}/agentService/agentChat/query"
+            payload = _build_agent_payload(
+                message,
+                client.ensure_model_id(),
+                client=client,
+                trace_id=msg_id,
+            )
+        else:
+            client.ensure_ready()
+            url = f"{client.base_url}/aichat/chat/query"
+            payload = {
+                "query": _build_query(message),
+                "history": [],
+                "stream": True,
+                "startFlag": 0,
+                "groupId": None,
+                "useTmp": 0,
+                "kb_ids": [],
+                "file_names": [],
+                "is_only_specialized": False,
+                "modelId": client.ensure_model_id(),
+                "isBoot": "1",
+            }
+
+        logger.info(
+            f"Start receiving Gongan LLM stream trace_id={msg_id}, "
+            f"sessionid={sessionid}, text_len={len(message)}, "
+            f"read_timeout={read_timeout}, agent_chat={use_agent}"
+        )
+        log_timepoint(
+            "LLM",
+            "请求公安大模型",
+            trace_id=msg_id,
+            sessionid=sessionid,
+            text_len=len(message),
+            model=payload.get("modelId"),
+            agent_chat=use_agent,
+        )
+        post_start = now()
+        response = client.session.post(
+            url,
+            json=payload,
+            headers=client.sse_headers(),
+            stream=True,
+            timeout=(client.timeout, read_timeout),
+        )
+        log_perf(
+            "llm",
+            "http_post",
+            elapsed_ms(post_start),
+            trace_id=msg_id,
+            sessionid=sessionid,
+            status_code=getattr(response, "status_code", None),
+        )
+        header_start = now()
+        response.raise_for_status()
+        log_perf(
+            "llm",
+            "http_headers_ready",
+            elapsed_ms(header_start),
+            trace_id=msg_id,
+            sessionid=sessionid,
+            status_code=getattr(response, "status_code", None),
+        )
+
+        for raw_line in response.iter_lines(decode_unicode=True):
+            is_active = getattr(nerfreal, "is_active_chat_trace", None)
+            if trace_id and callable(is_active) and not is_active(trace_id):
+                logger.info(
+                    f"停止处理已失效的公安LLM响应 trace_id={trace_id}, "
+                    f"chunks={chunk_count}, answer_len={sum(len(part) for part in complete_response)}"
+                )
+                return None
+            if not raw_line:
+                continue
+            if isinstance(raw_line, bytes):
+                raw_line = raw_line.decode("utf-8", errors="ignore")
+            line = raw_line.strip()
+            if line.startswith(("event:", "id:", "retry:")):
+                continue
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if not line or line == "[DONE]":
+                continue
+
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                logger.debug(f"Gongan LLM ignored non-JSON SSE line: {line[:120]!r}")
+                continue
+
+            chunk = _clean_chunk(_extract_answer(data))
+            if not chunk:
                 continue
 
             if not first_token_received:
                 first_token_received = True
-                logger.info(f"LLM首次响应耗时: {time.perf_counter() - start_time:.2f}s")
+                first_token_ms = (time.perf_counter() - start_time) * 1000
+                logger.info(
+                    f"Gongan LLM first token trace_id={msg_id}: "
+                    f"{first_token_ms / 1000:.2f}s"
+                )
+                log_timepoint(
+                    "LLM",
+                    "流式首token输出",
+                    trace_id=msg_id,
+                    sessionid=sessionid,
+                    first_chunk_len=len(chunk),
+                )
+                log_perf(
+                    "trace",
+                    "llm_first_token",
+                    first_token_ms,
+                    trace_id=msg_id,
+                    sessionid=sessionid,
+                    first_chunk_len=len(chunk),
+                )
 
-            # 获取消息内容
-            msg = chunk_response.choices[0].delta.content
-            if not msg:
-                continue
+            chunk_count += 1
+            result_queue.put_nowait(
+                {
+                    "data": chunk,
+                    "id": msg_id,
+                    "trace_id": msg_id,
+                    "finish": False,
+                    "_perf_enqueued_mono": now(),
+                }
+            )
+            complete_response.append(chunk)
 
-            # 清理特殊字符
-            msg = msg.translate(str.maketrans("", "", "*#-"))
+            tts_buffer += chunk
+            punct_pos = _find_last_punct(tts_buffer)
+            if punct_pos >= 0 and (punct_pos >= min_segment_len or len(tts_buffer) >= 30):
+                queue_tts(tts_buffer[: punct_pos + 1])
+                tts_buffer = tts_buffer[punct_pos + 1 :]
+            elif len(tts_buffer) >= max_segment_len:
+                queue_tts(tts_buffer)
+                tts_buffer = ""
 
-            # 通过队列发送到WebSocket
-            result_queue.put_nowait({'data': msg, 'id': msg_id, 'finish': False})
+        if tts_buffer.strip():
+            queue_tts(tts_buffer)
 
-            complete_response.append(msg)
-            buffer.append(msg)
+        result_queue.put_nowait(
+            {
+                "data": "",
+                "id": msg_id,
+                "trace_id": msg_id,
+                "finish": True,
+                "_perf_enqueued_mono": now(),
+            }
+        )
+        total_ms = (time.perf_counter() - start_time) * 1000
+        answer_len = sum(len(part) for part in complete_response)
+        logger.info(
+            f"Gongan LLM total time trace_id={msg_id}: {total_ms / 1000:.2f}s, "
+            f"chunks={chunk_count}, answer_len={answer_len}, tts_segments={tts_segments_queued}"
+        )
+        log_perf(
+            "llm",
+            "stream_done",
+            total_ms,
+            trace_id=msg_id,
+            sessionid=sessionid,
+            chunks=chunk_count,
+            answer_len=answer_len,
+            tts_segments=tts_segments_queued,
+        )
+        log_perf(
+            "trace",
+            "llm_done",
+            total_ms,
+            trace_id=msg_id,
+            sessionid=sessionid,
+            chunks=chunk_count,
+            answer_len=answer_len,
+            tts_segments=tts_segments_queued,
+        )
+        return "".join(complete_response)
 
-            # 增加分段长度阈值,确保每段文本更完整
-            if len(''.join(buffer)) >= 20:
-                text = ''.join(buffer)
-                # 优化标点符号查找逻辑
-                last_punct = -1
-                for p in ',.!;:，。！？：；':
-                    pos = text.rfind(p)
-                    if pos > last_punct:
-                        last_punct = pos
-
-                if last_punct != -1:
-                    output_text = text[:last_punct + 1]
-                    logger.debug(f"输出文本片段: {output_text}")
-                    nerfreal.put_msg_txt(output_text)
-                    buffer = [text[last_punct + 1:]]
-
-        # 处理剩余的buffer
-        if buffer:
-            final_text = ''.join(buffer)
-            if final_text.strip():
-                logger.debug(f"输出最终文本片段: {final_text}")
-                nerfreal.put_msg_txt(final_text)
-
-        # 更新会话历史
-        history.append({
-            "role": "assistant",
-            "content": ''.join(complete_response),
-        })
-
-        # 发送完成消息
-        result_queue.put_nowait({'data': "", 'id': msg_id, 'finish': True})
-
-        logger.info(f"LLM总响应耗时: {time.perf_counter() - start_time:.2f}s")
-
-        return ''.join(complete_response)
-
-    except Exception as e:
-        logger.error(f"公安LLM处理异常: {str(e)}")
+    except Exception as exc:
+        logger.exception(f"Gongan LLM error trace_id={msg_id}: {exc}")
+        result_queue.put_nowait(
+            {
+                "data": "",
+                "id": msg_id,
+                "trace_id": msg_id,
+                "finish": True,
+                "_perf_enqueued_mono": now(),
+            }
+        )
         return None
+    finally:
+        try:
+            finish_start = now()
+            finish_tts()
+            log_perf(
+                "tts",
+                "finish_after_llm",
+                elapsed_ms(finish_start),
+                trace_id=msg_id,
+                sessionid=sessionid,
+                llm_chunks=chunk_count,
+                tts_segments=tts_segments_queued,
+            )
+        except Exception as exc:
+            logger.warning(f"Gongan TTS finish error trace_id={msg_id}: {exc}")
+        finally:
+            try:
+                if response is not None:
+                    response.close()
+            except Exception:
+                pass
