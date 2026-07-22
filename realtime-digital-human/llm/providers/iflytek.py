@@ -150,6 +150,7 @@ def llm_response(
     appid = os.environ.get("IFLYTEK_APPID", "")
     api_key = os.environ.get("IFLYTEK_API_KEY", "")
     api_secret = os.environ.get("IFLYTEK_API_SECRET", "")
+    sn = os.environ.get("IFLYTEK_SN", "").strip()
     scene = os.environ.get("IFLYTEK_SCENE", "main_box")
     vcn = os.environ.get("IFLYTEK_VCN", "x5_lingyuzhao_flow")
     speed = _env_int("IFLYTEK_TTS_SPEED", 45)
@@ -166,8 +167,11 @@ def llm_response(
         f"{reply_instruction}\n用户问题：{message}" if reply_instruction else message
     )
 
-    if not appid or not api_key or not api_secret:
-        logger.error("讯飞LLM配置缺失，请设置 IFLYTEK_APPID / IFLYTEK_API_KEY / IFLYTEK_API_SECRET")
+    if not appid or not api_key or not api_secret or not sn:
+        logger.error(
+            "讯飞LLM配置缺失，请在 .env 中设置 "
+            "IFLYTEK_SN / IFLYTEK_APPID / IFLYTEK_API_KEY / IFLYTEK_API_SECRET"
+        )
         result_queue.put_nowait({"data": "", "id": msg_id, "finish": True})
         return None
 
@@ -178,7 +182,6 @@ def llm_response(
     try:
         auth_url = _build_auth_url(ws_url, api_key, api_secret)
         ws = websocket.create_connection(auth_url, timeout=timeout)
-        sn = os.environ.get("IFLYTEK_SN", f"{sessionid or 'session'}-{msg_id}")
         stmid = f"text-{msg_id}"
 
         req_data = _build_text_request(
