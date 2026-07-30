@@ -109,12 +109,24 @@ TTS_SERVER=http://127.0.0.1:8779
 TTS_SERVICE=http://127.0.0.1:8779
 IFLYTEK_TTS_VCN=xiaoyan
 IFLYTEK_TTS_FALLBACK_VCN=xiaoyan
+IFLYTEK_TTS_ENGINE=aiui
 
 PERF_LOG_ENABLED=1
 LLM_STREAM_TTS_ENABLED=0
 LLM_FRONTEND_STREAM_TEXT_ENABLED=0
 CUDA_VISIBLE_DEVICES=0
 ```
+
+使用讯飞超拟人 TTS 私有设备连接时，将引擎和设备授权地址写入 `.env`：
+
+```bash
+IFLYTEK_TTS_ENGINE=super
+IFLYTEK_SUPER_TTS_URL="wss://<讯飞控制台提供的当前设备授权地址>"
+```
+
+`IFLYTEK_SUPER_TTS_URL` 不再内置默认值。设备授权地址更新后，只修改 `.env`
+中的这一项并重启 realtime 后端即可，不需要改代码、重建前端镜像或重新安装 APK。
+真实地址不要提交到 GitHub。
 
 ### TensorRT Wav2Lip 配置
 
@@ -367,7 +379,31 @@ echo "$IFLYTEK_APPID"
 echo "$IFLY_APP_ID"
 ```
 
-### 2. 日志显示 `address already in use`
+### 2. 日志显示 `IFLYTEK_SUPER_TTS_URL 未配置` 或地址格式无效
+
+说明当前使用 `IFLYTEK_TTS_ENGINE=super`，但 `.env` 没有配置有效的讯飞设备
+WebSocket 地址。更新配置并重启后端：
+
+```bash
+cd /opt/digitalhuman/be
+nano .env
+# 填写：
+# IFLYTEK_TTS_ENGINE=super
+# IFLYTEK_SUPER_TTS_URL="wss://<讯飞控制台提供的当前设备授权地址>"
+
+sed -i 's/\r$//' .env
+sudo systemctl restart digitalhuman-realtime
+```
+
+核对变量是否存在时不要输出真实地址：
+
+```bash
+grep -Eq '^IFLYTEK_SUPER_TTS_URL="?wss?://' .env \
+  && echo "IFLYTEK_SUPER_TTS_URL 已配置" \
+  || echo "IFLYTEK_SUPER_TTS_URL 未配置或格式错误"
+```
+
+### 3. 日志显示 `address already in use`
 
 说明端口被旧服务占用：
 
@@ -377,7 +413,7 @@ sudo fuser -k 8010/tcp 8000/tcp
 sudo docker ps -a
 ```
 
-### 3. 数字人背景黑色
+### 4. 数字人背景黑色
 
 通常是背景图缺失，检查：
 
@@ -387,7 +423,7 @@ ls -lh /opt/digitalhuman/be/data/customimage/4.png
 
 如果缺失，重新解压 `data.zip` 到 `/opt/digitalhuman/be/data/`。
 
-### 4. TensorRT engine 加载失败
+### 5. TensorRT engine 加载失败
 
 engine 可能与服务器 TensorRT/CUDA/GPU 不兼容。解决方式：
 

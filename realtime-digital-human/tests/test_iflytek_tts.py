@@ -17,6 +17,7 @@ import types
 import queue
 import base64
 import json
+import pytest
 from unittest.mock import MagicMock, patch, call
 from urllib.parse import urlparse, parse_qs
 
@@ -44,18 +45,51 @@ from ttsreal import IflytekTTS  # noqa: E402
 # 辅助：构造最小 opt / parent
 # ---------------------------------------------------------------------------
 
-def _make_tts(app_id="app123", api_key="key456", vcn="xiaoyan"):
+def _make_tts(app_id="app123", api_key="key456", vcn="xiaoyan", extra_env=None):
     opt = MagicMock()
     opt.fps = 50          # chunk = 16000 // 50 = 320 samples
     opt.ifly_vcn = vcn
     parent = MagicMock()
-    with patch.dict("os.environ", {"IFLY_APP_ID": app_id, "IFLY_API_KEY": api_key}):
+    env = {"IFLY_APP_ID": app_id, "IFLY_API_KEY": api_key}
+    env.update(extra_env or {})
+    with patch.dict("os.environ", env, clear=True):
         tts = IflytekTTS(opt, parent)
     return tts, parent
 
 
 # ---------------------------------------------------------------------------
-# 1. 鉴权 URL 格式
+# 1. 超拟人 TTS 设备地址配置
+# ---------------------------------------------------------------------------
+
+class TestSuperTtsConfig:
+    def test_super_engine_requires_env_url(self):
+        with pytest.raises(RuntimeError, match="IFLYTEK_SUPER_TTS_URL"):
+            _make_tts(extra_env={"IFLYTEK_TTS_ENGINE": "super"})
+
+    def test_super_engine_reads_env_url(self):
+        expected_url = "wss://example.xf-yun.com/v1/private/current-device"
+        tts, _ = _make_tts(extra_env={
+            "IFLYTEK_TTS_ENGINE": "super",
+            "IFLYTEK_SUPER_TTS_URL": expected_url,
+        })
+
+        assert tts._super_ws_url == expected_url
+
+    def test_super_engine_rejects_non_websocket_url(self):
+        with pytest.raises(ValueError, match="ws:// 或 wss://"):
+            _make_tts(extra_env={
+                "IFLYTEK_TTS_ENGINE": "super",
+                "IFLYTEK_SUPER_TTS_URL": "https://example.xf-yun.com/private/device",
+            })
+
+    def test_aiui_engine_does_not_require_super_url(self):
+        tts, _ = _make_tts(extra_env={"IFLYTEK_TTS_ENGINE": "aiui"})
+
+        assert tts._super_ws_url == ""
+
+
+# ---------------------------------------------------------------------------
+# 2. 鉴权 URL 格式
 # ---------------------------------------------------------------------------
 
 class TestBuildWsUrl:
@@ -100,7 +134,7 @@ class TestBuildWsUrl:
 
 
 # ---------------------------------------------------------------------------
-# 2. _ifly_tts：WebSocket 消息处理
+# 3. _ifly_tts：WebSocket 消息处理
 # ---------------------------------------------------------------------------
 
 class TestIflyTts:
@@ -202,7 +236,7 @@ class TestIflyTts:
 
 
 # ---------------------------------------------------------------------------
-# 3. stream_tts：PCM 转 float32 并按帧推送
+# 4. stream_tts：PCM 转 float32 并按帧推送
 # ---------------------------------------------------------------------------
 
 class TestStreamTts:

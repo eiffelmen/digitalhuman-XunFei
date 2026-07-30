@@ -668,11 +668,21 @@ class IflytekTTS(BaseTTS):
             os.environ.get("IFLY_VCN", getattr(opt, "ifly_vcn", "x2_xiaojuan")),
         )
         self._fallback_vcn = os.environ.get("IFLYTEK_TTS_FALLBACK_VCN", "xiaoyan")
-        self._engine = os.environ.get("IFLYTEK_TTS_ENGINE", "aiui").lower()
-        self._super_ws_url = os.environ.get(
-            "IFLYTEK_SUPER_TTS_URL",
-            "wss://cbm01.cn-huabei-1.xf-yun.com/v1/private/mcd9m97e6",
-        )
+        self._engine = os.environ.get("IFLYTEK_TTS_ENGINE", "aiui").strip().lower()
+        self._super_ws_url = os.environ.get("IFLYTEK_SUPER_TTS_URL", "").strip()
+        if self._engine == "super":
+            from urllib.parse import urlparse
+
+            if not self._super_ws_url:
+                raise RuntimeError(
+                    "IFLYTEK_SUPER_TTS_URL 未配置。使用讯飞超拟人 TTS 时，"
+                    "请在 .env 中填写当前设备授权对应的 WebSocket 地址。"
+                )
+            parsed_super_url = urlparse(self._super_ws_url)
+            if parsed_super_url.scheme not in {"ws", "wss"} or not parsed_super_url.netloc:
+                raise ValueError(
+                    "IFLYTEK_SUPER_TTS_URL 格式无效，必须是完整的 ws:// 或 wss:// 地址。"
+                )
         self._speed = _env_int("IFLYTEK_TTS_SPEED", 45)
         self._volume = _env_int("IFLYTEK_TTS_VOLUME", 55)
         self._pitch = _env_int("IFLYTEK_TTS_PITCH", 48)
@@ -682,7 +692,8 @@ class IflytekTTS(BaseTTS):
         logger.info(
             f"IflytekTTS config: engine={self._engine}, vcn={self._vcn}, "
             f"fallback_vcn={self._fallback_vcn}, speed={self._speed}, "
-            f"volume={self._volume}, pitch={self._pitch}"
+            f"volume={self._volume}, pitch={self._pitch}, "
+            f"super_url_configured={bool(self._super_ws_url)}"
         )
 
     @staticmethod
