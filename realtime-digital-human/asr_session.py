@@ -288,7 +288,7 @@ class ASRSessionHandler:
         is_final: bool = True,
     ) -> None:
         ws = await self._wait_for_text_ws(timeout=1.0 if is_final else 0.2)
-        if not ws:
+        if ws is None:
             logger.warning(
                 f"[ASR] text websocket not ready; cannot send result "
                 f"session={self._session_id}, trace_id={trace_id}, is_final={is_final}"

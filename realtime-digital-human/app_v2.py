@@ -60,6 +60,13 @@ from aiortc import (
 )
 from mylogger import logger
 from perf_logger import elapsed_ms, log_perf, log_timepoint, now
+from session_websocket import (
+    claim_websocket,
+    invalidate_websocket,
+    release_websocket,
+    websocket_epoch_matches,
+    websocket_is_open,
+)
 
 
 WEBRTC_DISCONNECT_GRACE = float(os.environ.get("WEBRTC_DISCONNECT_GRACE", "10"))
@@ -104,6 +111,7 @@ class AppState:
         self.pcs: set = set()
         self.instanceid_pc: Dict[str, RTCPeerConnection] = {}
         self.sessionid_ws: Dict[str, web.WebSocketResponse] = {}
+        self.sessionid_ws_epochs: Dict[str, int] = {}
         self.opt = None
         self.model = None
         self.avatar = None
@@ -429,10 +437,24 @@ async def cleanup_session(state: AppState, sessionid: str, pc=None, reason: str 
     logger.info(f"开始清理会话 sessionid={sessionid}, reason={reason}")
 
     try:
-        active_pc = pc or state.instanceid_pc.get(sessionid)
+        current_pc = state.instanceid_pc.get(sessionid)
+        if pc is not None and current_pc is not pc:
+            logger.info(
+                f"忽略旧 WebRTC 连接的清理请求 sessionid={sessionid}, reason={reason}"
+            )
+            return
+
+        # 先同步摘除本代会话状态，再执行任何 await，避免旧连接的回调误删新状态。
+        active_pc = current_pc
         state.instanceid_pc.pop(sessionid, None)
         state.session_players.pop(sessionid, None)
         state.llm_ws_metrics.pop(sessionid, None)
+        nerfreal = state.nerfreals.pop(sessionid, None)
+        ws = invalidate_websocket(
+            state.sessionid_ws, state.sessionid_ws_epochs, sessionid
+        )
+        state.llm_response_queues.pop(sessionid, None)
+
         if active_pc is not None:
             state.pcs.discard(active_pc)
             if active_pc.connectionState != "closed":
@@ -441,29 +463,35 @@ async def cleanup_session(state: AppState, sessionid: str, pc=None, reason: str 
                 except Exception as e:
                     logger.warning(f"关闭 WebRTC 连接失败 sessionid={sessionid}: {e}")
 
-        nerfreal = state.nerfreals.pop(sessionid, None)
         if nerfreal is not None:
             stop_nerfreal_instance(nerfreal)
 
-        ws = state.sessionid_ws.pop(sessionid, None)
-        if ws is not None and not ws.closed:
+        if websocket_is_open(ws):
             try:
                 await ws.close()
             except Exception as e:
                 logger.warning(f"关闭 WebSocket 失败 sessionid={sessionid}: {e}")
 
-        state.llm_response_queues.pop(sessionid, None)
         logger.info(f"会话清理完成 sessionid={sessionid}")
     finally:
         state.cleaning_sessions.discard(sessionid)
 
 
-async def cleanup_after_ws_close(state: AppState, sessionid: str):
+async def cleanup_after_ws_close(
+    state: AppState, sessionid: str, ws_epoch: int
+):
     """
     浏览器刷新或关闭时，文本 WebSocket 通常会先断开。
     如果短暂等待后没有新的文本 WebSocket 接上，主动回收该会话，避免旧推理线程继续占用资源。
     """
     await asyncio.sleep(SESSION_WS_CLOSE_GRACE)
+    if not websocket_epoch_matches(
+        state.sessionid_ws_epochs, sessionid, ws_epoch
+    ):
+        logger.info(
+            f"忽略旧 WebSocket 的延迟清理 sessionid={sessionid}, epoch={ws_epoch}"
+        )
+        return
     if sessionid in state.nerfreals and sessionid not in state.sessionid_ws:
         await cleanup_session(
             state,
@@ -760,7 +788,7 @@ async def _handle_echo_request(params, sessionid, nerfreal, state: AppState):
     msg_id = trace_id
 
     ws = await _wait_for_session_ws(state, str(sessionid))
-    if ws:
+    if websocket_is_open(ws):
         await ws.send_json(
             {"data": text, "id": msg_id, "trace_id": trace_id, "finish": False}
         )
@@ -778,10 +806,11 @@ async def _wait_for_session_ws(state: AppState, sessionid: str, timeout: float =
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         ws = state.sessionid_ws.get(sessionid)
-        if ws:
+        if websocket_is_open(ws):
             return ws
         await asyncio.sleep(0.05)
-    return state.sessionid_ws.get(sessionid)
+    ws = state.sessionid_ws.get(sessionid)
+    return ws if websocket_is_open(ws) else None
 
 
 def _get_llm_response():
@@ -868,6 +897,10 @@ async def _llm_response_consumer(state: AppState):
             queue = state.llm_response_queues[sessionid]
             while not queue.empty():
                 try:
+                    ws = state.sessionid_ws.get(sessionid)
+                    if not websocket_is_open(ws):
+                        # 连接可能正处于短暂重连窗口，保留队列中的文本等待新连接。
+                        break
                     msg_data = queue.get_nowait()
                     send_data = dict(msg_data)
                     enqueue_mono = send_data.pop("_perf_enqueued_mono", None)
@@ -890,59 +923,52 @@ async def _llm_response_consumer(state: AppState):
                     if text:
                         metric["chunks"] += 1
                         metric["chars"] += len(text)
-                    ws = state.sessionid_ws.get(sessionid)
-                    if ws:
-                        send_start = now()
-                        await ws.send_json(send_data)
-                        send_duration_ms = elapsed_ms(send_start)
-                        queue_delay_ms = (
-                            elapsed_ms(enqueue_mono)
-                            if isinstance(enqueue_mono, (int, float))
-                            else None
-                        )
-                        if text and not metric.get("first_send_logged"):
-                            metric["first_send_logged"] = True
-                            log_timepoint(
-                                "WebSocket",
-                                "大模型首段文本发给前端",
-                                trace_id=trace_id,
-                                sessionid=sessionid,
-                                text_len=len(text),
-                                queue_delay_ms=(
-                                    f"{queue_delay_ms:.2f}"
-                                    if queue_delay_ms is not None
-                                    else None
-                                ),
-                            )
-                            log_perf(
-                                "trace",
-                                "llm_first_ws_send",
-                                send_duration_ms,
-                                trace_id=trace_id,
-                                sessionid=sessionid,
-                                text_len=len(text),
-                                queue_delay_ms=(
-                                    f"{queue_delay_ms:.2f}"
-                                    if queue_delay_ms is not None
-                                    else None
-                                ),
-                            )
-                        elif text:
-                            queue_delay_text = (
+                    send_start = now()
+                    await ws.send_json(send_data)
+                    send_duration_ms = elapsed_ms(send_start)
+                    queue_delay_ms = (
+                        elapsed_ms(enqueue_mono)
+                        if isinstance(enqueue_mono, (int, float))
+                        else None
+                    )
+                    if text and not metric.get("first_send_logged"):
+                        metric["first_send_logged"] = True
+                        log_timepoint(
+                            "WebSocket",
+                            "大模型首段文本发给前端",
+                            trace_id=trace_id,
+                            sessionid=sessionid,
+                            text_len=len(text),
+                            queue_delay_ms=(
                                 f"{queue_delay_ms:.2f}"
                                 if queue_delay_ms is not None
-                                else "unknown"
-                            )
-                            logger.debug(
-                                f"[PIPELINE] llm_ws_chunk trace_id={trace_id} "
-                                f"sessionid={sessionid} len={len(text)} "
-                                f"send_ms={send_duration_ms:.2f} "
-                                f"queue_delay_ms={queue_delay_text}"
-                            )
-                    elif text or finish:
-                        logger.warning(
-                            f"[PIPELINE] no text websocket sessionid={sessionid} "
-                            f"trace_id={trace_id} finish={finish} len={len(text)}"
+                                else None
+                            ),
+                        )
+                        log_perf(
+                            "trace",
+                            "llm_first_ws_send",
+                            send_duration_ms,
+                            trace_id=trace_id,
+                            sessionid=sessionid,
+                            text_len=len(text),
+                            queue_delay_ms=(
+                                f"{queue_delay_ms:.2f}"
+                                if queue_delay_ms is not None
+                                else None
+                            ),
+                        )
+                    elif text:
+                        queue_delay_text = (
+                            f"{queue_delay_ms:.2f}"
+                            if queue_delay_ms is not None
+                            else "unknown"
+                        )
+                        logger.debug(
+                            f"[PIPELINE] llm_ws_chunk trace_id={trace_id} "
+                            f"sessionid={sessionid} len={len(text)} "
+                            f"send_ms={send_duration_ms:.2f} "
+                            f"queue_delay_ms={queue_delay_text}"
                         )
 
                     if finish:
@@ -957,7 +983,7 @@ async def _llm_response_consumer(state: AppState):
                             chunks=metric.get("chunks"),
                             chars=metric.get("chars"),
                             queue_size=queue.qsize(),
-                            websocket_ready=bool(ws),
+                            websocket_ready=websocket_is_open(ws),
                         )
                         log_perf(
                             "trace",
@@ -1167,7 +1193,22 @@ async def ws_handler(request: web.Request) -> web.StreamResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    state.sessionid_ws[sessionid] = ws
+    previous_ws, ws_epoch = claim_websocket(
+        state.sessionid_ws, state.sessionid_ws_epochs, sessionid, ws
+    )
+    logger.info(
+        f"WebSocket连接已登记 sessionid={sessionid}, epoch={ws_epoch}, "
+        f"replaced={previous_ws is not None}"
+    )
+    if previous_ws is not ws and websocket_is_open(previous_ws):
+        try:
+            await previous_ws.close(
+                code=1000, message=b"replaced by a newer websocket"
+            )
+        except Exception as e:
+            logger.warning(
+                f"关闭被替换的 WebSocket 失败 sessionid={sessionid}: {e}"
+            )
 
     try:
         async for msg in ws:
@@ -1177,10 +1218,22 @@ async def ws_handler(request: web.Request) -> web.StreamResponse:
             elif msg.type == web.WSMsgType.ERROR:
                 logger.error(f"WebSocket错误: {ws.exception()}")
     finally:
-        logger.warning(f"WebSocket连接关闭 sessionid={sessionid}")
-        state.sessionid_ws.pop(sessionid, None)
-        state.llm_response_queues.pop(sessionid, None)
-        asyncio.create_task(cleanup_after_ws_close(state, sessionid))
+        released = release_websocket(
+            state.sessionid_ws,
+            state.sessionid_ws_epochs,
+            sessionid,
+            ws,
+            ws_epoch,
+        )
+        logger.warning(
+            f"WebSocket连接关闭 sessionid={sessionid}, epoch={ws_epoch}, "
+            f"owns_current_slot={released}"
+        )
+        if released:
+            # 短暂保留 LLM 队列供同一会话重连；超时后由统一会话清理回收。
+            asyncio.create_task(
+                cleanup_after_ws_close(state, sessionid, ws_epoch)
+            )
 
     return ws
 
