@@ -143,6 +143,7 @@ class ZkxhView @JvmOverloads constructor(
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     isWebViewLoaded = true
+                    notifyWebNetworkState(isNetworkAvailable)
                     // WebView加载完成后，发送积压的状态
                     pendingFaceStatus?.let { status ->
                         notifyWebFaceStatus(status)
@@ -200,12 +201,12 @@ class ZkxhView @JvmOverloads constructor(
             override fun onAvailable(network: Network) {
                 super.onAvailable(network)
                 isNetworkAvailable = true
-                // 网络可用时，如果网页还未加载，则加载网页
                 post {
                     zkxhWebView?.let { webView ->
                         if (webView.url.isNullOrEmpty()) {
                             webView.loadUrl("http://" + AppConstants.SERVER_IP + "/")
-//                            webView.loadUrl("http://your-server-host:3001/")
+                        } else if (isWebViewLoaded) {
+                            notifyWebNetworkState(true, forceReconnect = true)
                         }
                     }
                 }
@@ -213,7 +214,12 @@ class ZkxhView @JvmOverloads constructor(
 
             override fun onLost(network: Network) {
                 super.onLost(network)
-                isNetworkAvailable = false
+                checkCurrentNetworkStatus()
+                if (!isNetworkAvailable) {
+                    post {
+                        notifyWebNetworkState(false)
+                    }
+                }
             }
         }
 
@@ -254,6 +260,25 @@ class ZkxhView @JvmOverloads constructor(
             connectivityManager?.unregisterNetworkCallback(callback)
             networkCallback = null
         }
+    }
+
+    /**
+     * 将 Android 系统网络状态同步给网页。网页端会关闭失效的 PeerConnection，
+     * 并在网络恢复后立即重新执行 WebRTC offer/answer。
+     */
+    private fun notifyWebNetworkState(
+        available: Boolean,
+        forceReconnect: Boolean = false
+    ) {
+        if (!isWebViewLoaded) {
+            return
+        }
+        val js = "window.handleNativeNetworkChange?.($available, $forceReconnect);"
+        zkxhWebView?.evaluateJavascript(js, null)
+        android.util.Log.i(
+            "ZkxhView",
+            "已通知网页网络状态 available=$available forceReconnect=$forceReconnect"
+        )
     }
 
     /**
