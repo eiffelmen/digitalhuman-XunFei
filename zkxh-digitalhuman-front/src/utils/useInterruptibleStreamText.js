@@ -7,6 +7,7 @@ export function useInterruptibleStreamText({ isChinese, onChunkRendered }) {
   const streamReceiveFinished = ref(false);
 
   let messageQueue = [];
+  let receivedText = '';
   let renderAbortController = null;
   const staleStreamIds = new Set();
 
@@ -31,11 +32,14 @@ export function useInterruptibleStreamText({ isChinese, onChunkRendered }) {
     };
   }
 
-  function startNewStream(message) {
+  function startNewStream(message, options = {}) {
     const msgId = message?.id;
     if (!msgId) {
       return null;
     }
+
+    const preserveText = Boolean(options.preserveText);
+    const enqueueFirst = options.enqueueFirst !== false;
 
     if (activeStreamId.value && activeStreamId.value !== msgId) {
       staleStreamIds.add(activeStreamId.value);
@@ -46,12 +50,19 @@ export function useInterruptibleStreamText({ isChinese, onChunkRendered }) {
     activeStreamId.value = msgId;
     activeEpoch.value += 1;
     streamReceiveFinished.value = false;
-    messagebox.value = '';
+    if (!preserveText) {
+      messagebox.value = '';
+    }
+    receivedText = preserveText ? messagebox.value : '';
     messageQueue = [];
 
-    if (!message.finish) {
+    if (!message.finish && enqueueFirst) {
+      receivedText += String(message.data || '');
       messageQueue.push(message);
     } else {
+      if (typeof message.full_text === 'string') {
+        receivedText = message.full_text;
+      }
       streamReceiveFinished.value = true;
     }
 
@@ -60,10 +71,14 @@ export function useInterruptibleStreamText({ isChinese, onChunkRendered }) {
 
   function enqueueActiveStreamMessage(message) {
     if (message.finish) {
+      if (typeof message.full_text === 'string' && message.full_text) {
+        receivedText = message.full_text;
+      }
       streamReceiveFinished.value = true;
       return;
     }
 
+    receivedText += String(message.data || '');
     messageQueue.push(message);
   }
 
@@ -72,7 +87,10 @@ export function useInterruptibleStreamText({ isChinese, onChunkRendered }) {
   }
 
   function hasPendingMessages() {
-    return messageQueue.length > 0;
+    return messageQueue.length > 0 || (
+      streamReceiveFinished.value &&
+      receivedText !== messagebox.value
+    );
   }
 
   function isReceiveFinished() {
@@ -82,6 +100,22 @@ export function useInterruptibleStreamText({ isChinese, onChunkRendered }) {
   function shiftNextMessage(expectedId) {
     const currentMsg = messageQueue[0];
     if (!currentMsg) {
+      if (
+        streamReceiveFinished.value &&
+        receivedText !== messagebox.value
+      ) {
+        if (receivedText.startsWith(messagebox.value)) {
+          return {
+            id: expectedId,
+            data: receivedText.slice(messagebox.value.length),
+            finish: false,
+          };
+        }
+
+        // 收到的分片与最终文本无法按前缀对齐时，以后端
+        // finish 包中的完整回答为准，避免只留下末尾文字。
+        messagebox.value = receivedText;
+      }
       return null;
     }
 
@@ -127,6 +161,7 @@ export function useInterruptibleStreamText({ isChinese, onChunkRendered }) {
     streamReceiveFinished.value = false;
     staleStreamIds.clear();
     messageQueue = [];
+    receivedText = '';
     messagebox.value = '';
   }
 

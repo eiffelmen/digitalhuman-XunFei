@@ -116,6 +116,7 @@ class AppState:
         self.model = None
         self.avatar = None
         self.llm_response_queues: Dict[str, asyncio.Queue] = {}
+        self.llm_pending_messages: Dict[str, Dict[str, Any]] = {}
         self.llm_ws_metrics: Dict[str, Dict[str, Any]] = {}
         self.cleaning_sessions: set[str] = set()
         self.offer_lock = asyncio.Lock()
@@ -426,7 +427,13 @@ def stop_nerfreal_instance(nerfreal: LipReal):
         # 即使出错也要继续清理其他资源
 
 
-async def cleanup_session(state: AppState, sessionid: str, pc=None, reason: str = ""):
+async def cleanup_session(
+    state: AppState,
+    sessionid: str,
+    pc=None,
+    reason: str = "",
+    preserve_websocket: bool = False,
+):
     """
     统一清理单个会话，避免 WebRTC 断线后线程、队列和数字人实例残留。
     """
@@ -450,10 +457,13 @@ async def cleanup_session(state: AppState, sessionid: str, pc=None, reason: str 
         state.session_players.pop(sessionid, None)
         state.llm_ws_metrics.pop(sessionid, None)
         nerfreal = state.nerfreals.pop(sessionid, None)
-        ws = invalidate_websocket(
-            state.sessionid_ws, state.sessionid_ws_epochs, sessionid
-        )
+        ws = None
+        if not preserve_websocket:
+            ws = invalidate_websocket(
+                state.sessionid_ws, state.sessionid_ws_epochs, sessionid
+            )
         state.llm_response_queues.pop(sessionid, None)
+        state.llm_pending_messages.pop(sessionid, None)
 
         if active_pc is not None:
             state.pcs.discard(active_pc)
@@ -466,7 +476,7 @@ async def cleanup_session(state: AppState, sessionid: str, pc=None, reason: str 
         if nerfreal is not None:
             stop_nerfreal_instance(nerfreal)
 
-        if websocket_is_open(ws):
+        if not preserve_websocket and websocket_is_open(ws):
             try:
                 await ws.close()
             except Exception as e:
@@ -565,10 +575,14 @@ async def offer(request):
                 or sessionid in state.instanceid_pc
                 or sessionid in state.sessionid_ws
             ):
+                preserve_text_websocket = websocket_is_open(
+                    state.sessionid_ws.get(sessionid)
+                )
                 await cleanup_session(
                     state,
                     sessionid,
                     reason="new offer replaces existing session",
+                    preserve_websocket=preserve_text_websocket,
                 )
             await cleanup_old_sessions_for_new_offer(state, sessionid)
 
@@ -895,13 +909,22 @@ async def _llm_response_consumer(state: AppState):
         await asyncio.sleep(0.05)
         for sessionid in list(state.llm_response_queues.keys()):
             queue = state.llm_response_queues[sessionid]
-            while not queue.empty():
+            while (
+                sessionid in state.llm_pending_messages
+                or not queue.empty()
+            ):
                 try:
                     ws = state.sessionid_ws.get(sessionid)
                     if not websocket_is_open(ws):
                         # 连接可能正处于短暂重连窗口，保留队列中的文本等待新连接。
                         break
-                    msg_data = queue.get_nowait()
+                    pending_message = state.llm_pending_messages.get(sessionid)
+                    from_pending = pending_message is not None
+                    msg_data = (
+                        pending_message
+                        if from_pending
+                        else queue.get_nowait()
+                    )
                     send_data = dict(msg_data)
                     enqueue_mono = send_data.pop("_perf_enqueued_mono", None)
                     trace_id = send_data.get("trace_id") or send_data.get("id")
@@ -916,15 +939,36 @@ async def _llm_response_consumer(state: AppState):
                             "created_mono": now(),
                             "chunks": 0,
                             "chars": 0,
+                            "full_text_parts": [],
                             "first_send_logged": False,
                             "finish": False,
                         },
                     )
+                    if finish and not send_data.get("full_text"):
+                        # finish 包作为流式文本的最终校验点。前端可用它
+                        # 补齐断线重连或渲染竞态期间遗漏的少量分片。
+                        send_data["full_text"] = "".join(
+                            metric.get("full_text_parts", [])
+                        )
+                    send_start = now()
+                    try:
+                        await ws.send_json(send_data)
+                    except Exception as exc:
+                        # WebSocket 可能在状态检查后瞬间断开。保留当前消息，
+                        # 等同一 session 的新连接接管后按原顺序重发。
+                        state.llm_pending_messages[sessionid] = msg_data
+                        logger.warning(
+                            f"WebSocket发送中断，保留文本等待重连 "
+                            f"sessionid={sessionid}, trace_id={trace_id}, "
+                            f"finish={finish}, error={exc}"
+                        )
+                        break
+                    if from_pending:
+                        state.llm_pending_messages.pop(sessionid, None)
                     if text:
                         metric["chunks"] += 1
                         metric["chars"] += len(text)
-                    send_start = now()
-                    await ws.send_json(send_data)
+                        metric["full_text_parts"].append(text)
                     send_duration_ms = elapsed_ms(send_start)
                     queue_delay_ms = (
                         elapsed_ms(enqueue_mono)
