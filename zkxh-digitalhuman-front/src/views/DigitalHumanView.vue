@@ -110,9 +110,13 @@ function resetCountDown() {
 }
 
 // 视频就绪处理函数
-function handleVideoReady() {
-	console.log('视频流已就绪，可以开始处理人脸状态');
-	isVideoReady.value = true;
+function handleVideoReady(ready = true) {
+	isVideoReady.value = Boolean(ready);
+	console.log(
+		isVideoReady.value
+			? '视频流已就绪，可以开始处理人脸状态'
+			: '视频流已断开，等待 WebRTC 自动重连',
+	);
 }
 
 // 供安卓 WebView 调用的人脸状态处理函数
@@ -294,7 +298,7 @@ function handleReportDeviceId() {
 
 // 初始化内容返回websocket
 function handleInitChatWebSocket() {
-	chatRef.value.initFn();
+	chatRef.value?.initFn?.();
 }
 
 // 初始化socket检测，接收安卓信息
@@ -375,6 +379,13 @@ function initChatQuestionWebSocket() {
 onMounted(async () => {
 	// 暴露全局方法给安卓 WebView 调用
 	window.handleFaceStatus = handleFaceStatus;
+	window.handleNativeNetworkChange = (available, forceReconnect = false) => {
+		videoDivRef.value?.setNetworkAvailable?.(
+			Boolean(available),
+			'android',
+			{ forceReconnect: Boolean(forceReconnect) },
+		);
+	};
 	// 检查Electron接口是否可用
 	if (window.electronAPI && typeof window.electronAPI.getDeviceId === 'function') {
 		// Electron环境，使用Electron API获取设备ID
@@ -451,6 +462,9 @@ onUnmounted(() => {
 	// 清理全局方法
 	if (window.handleFaceStatus) {
 		delete window.handleFaceStatus;
+	}
+	if (window.handleNativeNetworkChange) {
+		delete window.handleNativeNetworkChange;
 	}
 });
 </script>

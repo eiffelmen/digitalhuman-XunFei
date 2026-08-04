@@ -14,7 +14,7 @@ class ImageRequest(BaseModel):
 
 
 def send_face_detection_request(frame):
-    url = "http://your-server-host:8039/Face/DetRecTrack"
+    url = "http://backend.example.internal:8039/Face/DetRecTrack"
     _, buffer = cv2.imencode('.jpg', frame)
     image_data = base64.b64encode(buffer).decode('utf-8')
 
@@ -49,7 +49,7 @@ async def websocket_process_frame(websocket: WebSocket):
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
             result = send_face_detection_request(frame)
-        
+
             if isinstance(result, dict) and "error" in result:
                 await websocket.send_json({"error": result["error"]})
             else:

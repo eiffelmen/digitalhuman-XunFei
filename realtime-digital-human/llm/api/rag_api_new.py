@@ -9,9 +9,10 @@ import os
 import json
 import traceback
 
-# 配置Bing搜索API
+# 配置 Bing 搜索 API。真实密钥请通过环境变量传入。
+os.environ.setdefault("BING_SUBSCRIPTION_KEY", "")
 os.environ.setdefault("BING_SEARCH_URL", "https://api.bing.microsoft.com/v7.0/search")
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 import re
 import time

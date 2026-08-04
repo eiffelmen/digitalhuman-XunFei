@@ -7,12 +7,8 @@ from sseclient import SSEClient
 
 
 def message_generator(goal, token, sessionid="0"):
-    base_url = os.getenv(
-        "RATUBRAIN_BASE_URL",
-        "https://test.ratubrain.com/api/ai/chat/stream/start_chat/get",
-    )
     messages = SSEClient(
-        f'{base_url}?goal={goal}&token={token}&chat_id={sessionid}&token_sleep=0')
+        f'https://test.ratubrain.com/api/ai/chat/stream/start_chat/get?goal={goal}&token={token}&chat_id={sessionid}&token_sleep=0')
 
     start_time = time.time()
     first_token_received = False
@@ -38,9 +34,11 @@ def message_generator(goal, token, sessionid="0"):
             yield token_value
 
 
-if __name__ == "__main__":
-    goal = "介绍一下中科智汇工厂"
-    token = os.getenv("RATUBRAIN_API_KEY", "test-ratubrain-token")
+goal = "介绍一下中科智汇工厂"
+token = os.environ.get("RATUBRAIN_API_TOKEN", "")
 
-    for token_value in message_generator(goal, token, sessionid=uuid.uuid4()):
-        print(token_value, end="", flush=True)
+if not token:
+    raise RuntimeError("Set RATUBRAIN_API_TOKEN before running this manual test.")
+
+for token_value in message_generator(goal, token, sessionid=uuid.uuid4()):
+    print(token_value, end="", flush=True)

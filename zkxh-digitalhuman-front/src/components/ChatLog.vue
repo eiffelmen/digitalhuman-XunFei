@@ -1,8 +1,12 @@
 <script setup>
 import 'recorder-core/src/engine/wav';
 import 'recorder-core/src/extensions/waveview';
-import { nextTick, onMounted, onUnmounted, ref } from 'vue';
-import { llmSocket, initLLMSocket as startInitLLMSocket } from '@/api/llm.js';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+import {
+	closeLLMSocket,
+	initLLMSocket as startInitLLMSocket,
+	subscribeLLMMessages,
+} from '@/api/llm.js';
 import { isChinese } from '@/utils/string';
 import { getPublicUrl } from '@/utils/getAssets';
 import useInterruptibleStreamText from '@/utils/useInterruptibleStreamText';
@@ -74,6 +78,19 @@ const {
 	onChunkRendered: scrollScreen,
 })
 const { waitUntilSilent } = useAvatarSpeechSync();
+const messageTextStyle = computed(() => {
+	const length = messagebox.value.length;
+	if (length <= 24) {
+		return { fontSize: '5.25rem' };
+	}
+	if (length <= 48) {
+		return { fontSize: '4rem' };
+	}
+	if (length <= 80) {
+		return { fontSize: '3rem' };
+	}
+	return { fontSize: '2.25rem' };
+});
 
 // 状态转换函数
 function transitionTo(newState, eventData = null) {
@@ -118,6 +135,12 @@ async function handleProcessingState(context) {
 
 async function handleOutputtingState(context) {
   	console.log("Entering OUTPUTTING state with data:", context);
+	if (!context) {
+		return;
+	}
+	if (stateMachineAbortController?.signal.aborted) {
+		stateMachineAbortController = null;
+	}
 	if (!stateMachineAbortController) {
 		stateMachineAbortController = ensureAbortController();
 	}
@@ -219,58 +242,77 @@ function resetFinishedTimeout() {
   }, 30000);
 }
 
-const initLLMSocket = () => {
-	startInitLLMSocket().then(res => {
-		if (res === 'open') {
-			llmSocket.addEventListener('message', async event => {
-				try {
-					const msg = JSON.parse(event.data);
-					console.info('需要输出的文本内容:', msg);
-
-					if (typeof msg !== 'object' || msg === null) {
-						console.error('Invalid message format.');
-						return;
-					}
-
-					if (!msg.id) {
-						console.error('Missing message id.');
-						return
-					}
-
-					if (shouldIgnoreMessage(msg)) {
-						console.log('忽略已失效流消息', msg.id);
-						return;
-					}
-
-					if (!activeStreamId.value || currentState.value === STATES.IDLE) {
-						const context = startNewStream(msg);
-						clearAllTimeouts();
-						showChatLog.value = true;
-						transitionTo(STATES.OUTPUTTING, context);
-						return;
-					}
-
-					if (msg.id !== activeStreamId.value) {
-						const context = startNewStream(msg);
-						clearAllTimeouts();
-						showChatLog.value = true;
-						transitionTo(STATES.OUTPUTTING, context);
-						return;
-					}
-
-					enqueueActiveStreamMessage(msg);
-					resetFinishedTimeout();
-				} catch (error) {
-					console.error('Error parsing message: ', error);
-				}
-			});
-		}
+function beginMessageStream(msg) {
+	// 欢迎语会先本地显示，随后 echo 再从后端返回相同文本。
+	// 保留已经显示的内容，避免先清空再逐字重画造成闪烁。
+	const preserveVisibleText = Boolean(msg.data) &&
+		currentState.value === STATES.FINISHED &&
+		messagebox.value === msg.data;
+	const context = startNewStream(msg, {
+		preserveText: preserveVisibleText,
+		enqueueFirst: !preserveVisibleText,
 	});
+
+	// startNewStream 已中止上一代内部渲染控制器；同步清掉状态机引用，
+	// 避免下一轮继续复用 aborted controller，导致文本框出现但不渲染。
+	stateMachineAbortController = null;
+	clearAllTimeouts();
+	showChatLog.value = true;
+	transitionTo(STATES.OUTPUTTING, context);
+}
+
+async function handleLLMMessage(event) {
+	try {
+		const rawMsg = JSON.parse(event.data);
+		const streamId = rawMsg?.trace_id || rawMsg?.id;
+		const msg = streamId ? { ...rawMsg, id: streamId } : rawMsg;
+		console.info('需要输出的文本内容:', msg);
+
+		if (typeof msg !== 'object' || msg === null) {
+			console.error('Invalid message format.');
+			return;
+		}
+
+		if (!msg.id) {
+			console.error('Missing message id.');
+			return;
+		}
+
+		if (shouldIgnoreMessage(msg)) {
+			console.log('忽略已失效流消息', msg.id);
+			return;
+		}
+
+		if (!activeStreamId.value || currentState.value === STATES.IDLE) {
+			beginMessageStream(msg);
+			return;
+		}
+
+		if (msg.id !== activeStreamId.value) {
+			beginMessageStream(msg);
+			return;
+		}
+
+		enqueueActiveStreamMessage(msg);
+		resetFinishedTimeout();
+	} catch (error) {
+		console.error('Error parsing message: ', error);
+	}
+}
+
+let unsubscribeLLMMessages = null;
+const initLLMSocket = async () => {
+	// offer 会替换后端会话，强制让文本 WebSocket 接管新一代会话。
+	const result = await startInitLLMSocket({ force: true });
+	if (result !== 'open') {
+		console.warn(`LLM 文本 WebSocket 首次连接结果: ${result}，等待自动重连`);
+	}
 };
 
 const resetChat = () => {
 	clearAllTimeouts();
 	resetStream();
+	stateMachineAbortController = null;
 	currentState.value = STATES.IDLE;
 	showChatLog.value = false;
 };
@@ -281,6 +323,7 @@ const showText = (text) => {
 
 	clearAllTimeouts();
 	resetStream();
+	stateMachineAbortController = null;
 	messagebox.value = text;
 	showChatLog.value = true;
 	currentState.value = STATES.FINISHED;
@@ -300,13 +343,15 @@ defineExpose({
 onUnmounted(() => {
 	abortActiveRender();
 	clearAllTimeouts();
-	if (llmSocket && llmSocket.readyState === WebSocket.OPEN) {
-		llmSocket.close();
+	if (unsubscribeLLMMessages) {
+		unsubscribeLLMMessages();
+		unsubscribeLLMMessages = null;
 	}
-	// llmSocket = null;
+	closeLLMSocket();
 });
 
 onMounted(() => {
+	unsubscribeLLMMessages = subscribeLLMMessages(handleLLMMessage);
 	transitionTo(STATES.IDLE)
 });
 </script>
@@ -321,7 +366,7 @@ onMounted(() => {
 			class="chatview w-100 overflow-auto"
 			style="flex: 1"
 		>
-				<div class="d-flex" style="width: 100%;height: 300px;font-size: 5.25rem;color: white;">
+				<div class="message-content" :style="messageTextStyle">
 				{{ messagebox }}
 				</div>
 		</div>
@@ -350,6 +395,17 @@ onMounted(() => {
 	/* padding-top: 78px; */
 	height: 100% !important;
 	width: 100%;
+}
+
+.message-content {
+	width: 100%;
+	min-height: 300px;
+	color: white;
+	line-height: 1.35;
+	letter-spacing: 0;
+	white-space: pre-wrap;
+	word-break: break-word;
+	overflow-wrap: anywhere;
 }
 
 

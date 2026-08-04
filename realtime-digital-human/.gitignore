@@ -5,14 +5,12 @@ build/
 *.mp4
 
 *.pth
+*.engine
+*.onnx
 *.log
 *.wav
 *.zip
 /data/*
-!/data/
-!/data/README.md
-!/data/avatars/
-!/data/avatars/.gitkeep
 
 # 但是不忽略这两个特定的文件
 !/data/template_upload_api.py

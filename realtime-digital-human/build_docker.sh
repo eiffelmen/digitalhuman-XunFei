@@ -2,7 +2,7 @@
 
 # ================= 配置区域 =================
 # 仓库地址
-REGISTRY="${REGISTRY:-registry.example.com:8099}"
+REGISTRY="${REGISTRY:-registry.example.com}"
 # 项目名
 PROJECT="digitalhuman"
 # 应用名
@@ -45,7 +45,7 @@ function build_local {
     TAG_ARM="${IMAGE_BASE}:arm64-${VERSION}"
     echo -e "${YELLOW}正在构建 ARM64 版本 -> ${TAG_ARM} ...${NC}"
     docker buildx build --platform linux/arm64 -t "${TAG_ARM}" . --load
-    
+
     if [ $? -eq 0 ]; then echo -e "${GREEN}✔ ARM64 构建成功${NC}"; else echo -e "${RED}✘ ARM64 构建失败${NC}"; exit 1; fi
 
     # --- 构建 AMD64 (x86) ---
@@ -62,10 +62,10 @@ function build_local {
 # 2. 推送模式 (合并构建，One Tag Multi Arch)
 function build_and_push {
     echo -e "${GREEN}>>> [Push Mode] 开始构建双架构并推送到仓库...${NC}"
-    
+
     # 统一的标签 (不带架构后缀)
     TAG_FULL="${IMAGE_BASE}:${VERSION}"
-    
+
     echo -e "${YELLOW}目标镜像: ${TAG_FULL}${NC}"
     echo -e "${YELLOW}包含架构: linux/amd64, linux/arm64${NC}"
 

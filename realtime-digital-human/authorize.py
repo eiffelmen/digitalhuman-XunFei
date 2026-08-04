@@ -6,14 +6,14 @@ def get_baseboard_serial_hash():
 
 def check_hardware():
     """硬件验证（预设的合法BASHBOARD序列号哈希值）"""
-    VALID_BASEBOARD_SERIAL_HASH = "ab2682361f94047df4e097eaa146f6b0"
+    valid_baseboard_serial_hash = os.environ.get("VALID_BASEBOARD_SERIAL_HASH", "")
 
     baseboard_serial = get_baseboard_serial_hash()
-    if not baseboard_serial:
+    if not baseboard_serial or not valid_baseboard_serial_hash:
         return False
 
     current_hash = baseboard_serial
-    return current_hash == VALID_BASEBOARD_SERIAL_HASH
+    return current_hash == valid_baseboard_serial_hash
 
 
 from datetime import datetime

@@ -99,6 +99,7 @@ class TestIflytekProvider(unittest.TestCase):
                 "IFLYTEK_APPID": "appid",
                 "IFLYTEK_API_KEY": "api_key",
                 "IFLYTEK_API_SECRET": "api_secret",
+                "IFLYTEK_SN": "fixed-device-sn",
             },
             clear=True,
         ):
@@ -106,6 +107,8 @@ class TestIflytekProvider(unittest.TestCase):
 
         self.assertEqual(result, nlp_text)
         ws.send.assert_called_once()
+        request_data = json.loads(ws.send.call_args.args[0])
+        self.assertEqual(request_data["header"]["sn"], "fixed-device-sn")
         ws.close.assert_called_once()
         nerfreal.put_msg_txt.assert_called()
 
@@ -127,12 +130,36 @@ class TestIflytekProvider(unittest.TestCase):
                 "IFLYTEK_APPID": "appid",
                 "IFLYTEK_API_KEY": "api_key",
                 "IFLYTEK_API_SECRET": "api_secret",
+                "IFLYTEK_SN": "fixed-device-sn",
             },
             clear=True,
         ):
             result = llm_response("你好", nerfreal, "session-3", queue)
 
         self.assertIsNone(result)
+        nerfreal.put_msg_txt.assert_not_called()
+        items = _drain_queue(queue)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["finish"], True)
+
+    @patch("llm.providers.iflytek.websocket.create_connection")
+    def test_llm_response_requires_configured_sn(self, mock_conn):
+        queue = asyncio.Queue()
+        nerfreal = MagicMock()
+
+        with patch.dict(
+            "os.environ",
+            {
+                "IFLYTEK_APPID": "appid",
+                "IFLYTEK_API_KEY": "api_key",
+                "IFLYTEK_API_SECRET": "api_secret",
+            },
+            clear=True,
+        ):
+            result = llm_response("你好", nerfreal, "session-4", queue)
+
+        self.assertIsNone(result)
+        mock_conn.assert_not_called()
         nerfreal.put_msg_txt.assert_not_called()
         items = _drain_queue(queue)
         self.assertEqual(len(items), 1)

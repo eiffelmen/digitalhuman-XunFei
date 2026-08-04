@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('Error accessing media devices.', error);
         });
 
-    const socket = new WebSocket('ws://your-server-host:5000/ws/process_frame');
+    const socket = new WebSocket('ws://backend.example.internal:5000/ws/process_frame');
 
     socket.onopen = () => {
         console.log('WebSocket connection established');
